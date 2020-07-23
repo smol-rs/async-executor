@@ -153,6 +153,8 @@ impl Executor {
 
     /// Runs the executor until the given future completes.
     ///
+    /// Also runs the multi-threaded executor if ran from within it.
+    ///
     /// # Examples
     ///
     /// ```
@@ -333,6 +335,12 @@ impl LocalExecutor {
         let u = self.parker.unparker();
         let waker = waker_fn(move || u.unpark());
         let cx = &mut Context::from_waker(&waker);
+        let ticker = if EX.is_set() {
+            let u = self.parker.unparker();
+            Some(EX.with(|executor| executor.ex.ticker(move || u.unpark())))
+        } else {
+            None
+        };
 
         LOCAL_EX.set(self, || {
             'start: loop {
@@ -341,7 +349,7 @@ impl LocalExecutor {
                 }
 
                 for _ in 0..200 {
-                    if !self.ex.tick() {
+                    if !self.ex.tick() && !ticker.as_ref().map_or(false, multitask::Ticker::tick) {
                         self.parker.park();
                         continue 'start;
                     }
