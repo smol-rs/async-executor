@@ -30,6 +30,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -72,7 +73,7 @@ scoped_thread_local!(static LOCAL_EX: LocalExecutor);
 /// ```
 #[derive(Debug)]
 pub struct Executor {
-    ex: multitask::Executor,
+    ex: Arc<multitask::Executor>,
 }
 
 impl Executor {
@@ -81,13 +82,29 @@ impl Executor {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::LocalExecutor;
+    /// use async_executor::Executor;
     ///
-    /// let local_ex = LocalExecutor::new();
+    /// let ex = Executor::new();
     /// ```
     pub fn new() -> Executor {
         Executor {
-            ex: multitask::Executor::new(),
+            ex: Arc::new(multitask::Executor::new()),
+        }
+    }
+
+    /// Creates a spawner for this executor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    ///
+    /// let ex = Executor::new();
+    /// let spawner = ex.spawner();
+    /// ```
+    pub fn spawner(&self) -> Spawner {
+        Spawner {
+            ex: self.ex.clone(),
         }
     }
 
@@ -181,6 +198,62 @@ impl Executor {
 impl Default for Executor {
     fn default() -> Executor {
         Executor::new()
+    }
+}
+
+/// A spawner for a multi-threaded executor.
+#[derive(Debug)]
+pub struct Spawner {
+    ex: Arc<multitask::Executor>,
+}
+
+impl Spawner {
+    /// Gets a spawner for the current multi-threaded executor.
+    ///
+    /// If called from an [`Executor`], returns its [`Spawner`].
+    ///
+    /// Otherwise, this method panics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::{Executor, Spawner};
+    ///
+    /// let ex = Executor::new();
+    ///
+    /// ex.run(async {
+    ///     let spawner = Spawner::current();
+    ///     let task = spawner.spawn(async { 1 + 2 });
+    ///     assert_eq!(task.await, 3);
+    /// });
+    /// ```
+    pub fn current() -> Spawner {
+        if EX.is_set() {
+            EX.with(|ex| ex.spawner())
+        } else {
+            panic!("`Spawner::current()` must be called from an `Executor`")
+        }
+    }
+
+    /// Spawns a task onto the executor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    ///
+    /// let ex = Executor::new();
+    /// let spawner = ex.spawner();
+    ///
+    /// let task = spawner.spawn(async {
+    ///     println!("Hello world");
+    /// });
+    /// ```
+    pub fn spawn<T: Send + 'static>(
+        &self,
+        future: impl Future<Output = T> + Send + 'static,
+    ) -> Task<T> {
+        Task(self.ex.spawn(future))
     }
 }
 
