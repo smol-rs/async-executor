@@ -193,6 +193,55 @@ impl Executor {
             }
         })
     }
+
+    /// Runs a local executor and the multi-threaded one until the given future completes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::{Executor, Task};
+    ///
+    /// let ex = Executor::new();
+    ///
+    /// let task = ex.spawn(async { 1 + 2 });
+    /// let res = ex.run_with_local(async {
+    ///     let local = Task::local(async { 1 + 1 });
+    ///     task.await * local.await
+    /// });
+    ///
+    /// assert_eq!(res, 6);
+    /// ```
+    pub fn run_with_local<T>(&self, future: impl Future<Output = T>) -> T {
+        let local_executor = LocalExecutor::new();
+        LOCAL_EX.set(&local_executor, || {
+            self.enter(|| {
+                let (p, u) = parking::pair();
+
+                let ticker = self.ex.ticker({
+                    let u = u.clone();
+                    move || u.unpark()
+                });
+
+                pin!(future);
+                let waker = waker_fn(move || u.unpark());
+                let cx = &mut Context::from_waker(&waker);
+
+                'start: loop {
+                    if let Poll::Ready(t) = future.as_mut().poll(cx) {
+                        break t;
+                    }
+
+                    for _ in 0..200 {
+                        if !local_executor.ex.tick() && !ticker.tick() {
+                            p.park();
+                            continue 'start;
+                        }
+                    }
+                    p.park_timeout(Duration::from_secs(0));
+                }
+            })
+        })
+    }
 }
 
 impl Default for Executor {
