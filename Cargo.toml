@@ -18,7 +18,7 @@ default = ["async-io"]
 [dependencies]
 futures-lite = "0.1.8"
 multitask = "0.2.0"
-parking = "1.0.5"
+parking = "2.0.0"
 scoped-tls = "1.0.0"
 waker-fn = "1.0.0"
 
