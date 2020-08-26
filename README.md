@@ -9,31 +9,24 @@ https://crates.io/crates/async-executor)
 [![Documentation](https://docs.rs/async-executor/badge.svg)](
 https://docs.rs/async-executor)
 
-Async executor.
-
-This crate offers two kinds of executors: single-threaded and multi-threaded.
+Async executors.
 
 ## Examples
 
-Run a single-threaded and a multi-threaded executor at the same time:
-
 ```rust
-use async_channel::unbounded;
-use async_executor::{Executor, LocalExecutor};
-use easy_parallel::Parallel;
+use async_executor::Executor;
+use futures_lite::future;
 
+// Create a new executor.
 let ex = Executor::new();
-let local_ex = LocalExecutor::new();
-let (trigger, shutdown) = unbounded::<()>();
 
-Parallel::new()
-    // Run four executor threads.
-    .each(0..4, |_| ex.run(shutdown.recv()))
-    // Run local executor on the current thread.
-    .finish(|| local_ex.run(async {
-        println!("Hello world!");
-        drop(trigger);
-    }));
+// Spawn a task.
+let task = ex.spawn(async {
+    println!("Hello world");
+});
+
+// Run the executor until the task complets.
+future::block_on(ex.run(task));
 ```
 
 ## License
