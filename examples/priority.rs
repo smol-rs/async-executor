@@ -39,22 +39,22 @@ impl PriorityExecutor {
         self.ex[priority as usize].spawn(future)
     }
 
-    /// Runs the executor until the future completes.
-    async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        future
-            .or(async {
-                // Keep ticking inner executors forever.
-                loop {
-                    let t0 = self.ex[0].tick();
-                    let t1 = self.ex[1].tick();
-                    let t2 = self.ex[2].tick();
+    /// Runs the executor forever.
+    async fn run(&self) {
+        loop {
+            for _ in 0..200 {
+                let t0 = self.ex[0].tick();
+                let t1 = self.ex[1].tick();
+                let t2 = self.ex[2].tick();
 
-                    // Wait until one of the ticks completes, trying them in order from highest
-                    // priority to lowest priority.
-                    t0.or(t1).or(t2).await;
-                }
-            })
-            .await
+                // Wait until one of the ticks completes, trying them in order from highest
+                // priority to lowest priority.
+                t0.or(t1).or(t2).await;
+            }
+
+            // Yield every now and then.
+            future::yield_now().await;
+        }
     }
 }
 
@@ -62,10 +62,7 @@ fn main() {
     static EX: PriorityExecutor = PriorityExecutor::new();
 
     // Spawn a thread running the executor forever.
-    thread::spawn(|| {
-        let forever = future::pending::<()>();
-        future::block_on(EX.run(forever));
-    });
+    thread::spawn(|| future::block_on(EX.run()));
 
     let mut tasks = Vec::new();
 
