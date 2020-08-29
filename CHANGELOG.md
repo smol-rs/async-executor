@@ -1,3 +1,7 @@
+# Version 0.2.1
+
+- Add `try_tick()` and `tick()` methods.
+
 # Version 0.2.0
 
 - Redesign the whole API.
