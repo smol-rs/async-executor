@@ -1,3 +1,7 @@
+# Version 1.1.0
+
+- Use atomics to make `Executor::run()` and `Executor::tick()` futures `Send + Sync`.
+
 # Version 1.0.0
 
 - Stabilize.
