@@ -1,3 +1,7 @@
+# Version 1.1.1
+
+- Replace `AtomicU64` with `AtomicUsize`.
+
 # Version 1.1.0
 
 - Use atomics to make `Executor::run()` and `Executor::tick()` futures `Send + Sync`.
