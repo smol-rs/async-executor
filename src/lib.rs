@@ -26,7 +26,7 @@ use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering, AtomicU64, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Waker};
 
@@ -199,7 +199,7 @@ impl State {
             sleepers: Mutex::new(Sleepers {
                 count: 0,
                 wakers: Vec::new(),
-                id_gen: 1,
+                free_ids: Vec::new(),
             }),
         }
     }
@@ -228,17 +228,19 @@ struct Sleepers {
     /// IDs and wakers of sleeping unnotified tickers.
     ///
     /// A sleeping ticker is notified when its waker is missing from this list.
-    wakers: Vec<(u64, Waker)>,
+    wakers: Vec<(usize, Waker)>,
 
-    /// ID generator for sleepers.
-    id_gen: u64,
+    /// Reclaimed IDs.
+    free_ids: Vec<usize>,
 }
 
 impl Sleepers {
     /// Inserts a new sleeping ticker.
-    fn insert(&mut self, waker: &Waker) -> u64 {
-        let id = self.id_gen;
-        self.id_gen += 1;
+    fn insert(&mut self, waker: &Waker) -> usize {
+        let id = match self.free_ids.pop() {
+            Some(id) => id,
+            None => self.count + 1,
+        };
         self.count += 1;
         self.wakers.push((id, waker.clone()));
         id
@@ -247,7 +249,7 @@ impl Sleepers {
     /// Re-inserts a sleeping ticker's waker if it was notified.
     ///
     /// Returns `true` if the ticker was notified.
-    fn update(&mut self, id: u64, waker: &Waker) -> bool {
+    fn update(&mut self, id: usize, waker: &Waker) -> bool {
         for item in &mut self.wakers {
             if item.0 == id {
                 if !item.1.will_wake(waker) {
@@ -264,8 +266,10 @@ impl Sleepers {
     /// Removes a previously inserted sleeping ticker.
     ///
     /// Returns `true` if the ticker was notified.
-    fn remove(&mut self, id: u64) -> bool {
+    fn remove(&mut self, id: usize) -> bool {
         self.count -= 1;
+        self.free_ids.push(id);
+
         for i in (0..self.wakers.len()).rev() {
             if self.wakers[i].0 == id {
                 self.wakers.remove(i);
@@ -494,7 +498,7 @@ struct Ticker<'a> {
     /// 1) Woken.
     /// 2a) Sleeping and unnotified.
     /// 2b) Sleeping and notified.
-    sleeping: AtomicU64,
+    sleeping: AtomicUsize,
 }
 
 impl Ticker<'_> {
@@ -502,7 +506,7 @@ impl Ticker<'_> {
     fn new(state: &State) -> Ticker<'_> {
         Ticker {
             state,
-            sleeping: AtomicU64::new(0),
+            sleeping: AtomicUsize::new(0),
         }
     }
 
@@ -514,7 +518,9 @@ impl Ticker<'_> {
 
         match self.sleeping.load(Ordering::SeqCst) {
             // Move to sleeping state.
-            0 => self.sleeping.store(sleepers.insert(waker), Ordering::SeqCst),
+            0 => self
+                .sleeping
+                .store(sleepers.insert(waker), Ordering::SeqCst),
 
             // Already sleeping, check if notified.
             id => {
