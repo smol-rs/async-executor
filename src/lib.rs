@@ -440,13 +440,13 @@ impl Executor {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        let runner = Runner::new(self.state());
+        let ticker = Ticker::new(self.state());
 
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
                 for _ in 0..200 {
-                    let runnable = runner.runnable().await;
+                    let runnable = ticker.runnable().await;
                     runnable.run();
                 }
                 future::yield_now().await;
@@ -600,134 +600,6 @@ impl Drop for Ticker<'_> {
             if notified {
                 drop(sleepers);
                 self.state.notify();
-            }
-        }
-    }
-}
-
-/// A worker in a work-stealing executor.
-///
-/// This is just a ticker that also has an associated local queue for improved cache locality.
-#[derive(Debug)]
-struct Runner<'a> {
-    /// The executor state.
-    state: &'a State,
-
-    /// Inner ticker.
-    ticker: Ticker<'a>,
-
-    /// The local queue.
-    local: Arc<ConcurrentQueue<Runnable>>,
-
-    /// Bumped every time a runnable task is found.
-    ticks: AtomicUsize,
-}
-
-impl Runner<'_> {
-    /// Creates a runner and registers it in the executor state.
-    fn new(state: &State) -> Runner<'_> {
-        let runner = Runner {
-            state,
-            ticker: Ticker::new(state),
-            local: Arc::new(ConcurrentQueue::bounded(512)),
-            ticks: AtomicUsize::new(0),
-        };
-        state
-            .local_queues
-            .write()
-            .unwrap()
-            .push(runner.local.clone());
-        runner
-    }
-
-    /// Waits for the next runnable task to run.
-    async fn runnable(&self) -> Runnable {
-        let runnable = self
-            .ticker
-            .runnable_with(|| {
-                // Try the local queue.
-                if let Ok(r) = self.local.pop() {
-                    return Some(r);
-                }
-
-                // Try stealing from the global queue.
-                if let Ok(r) = self.state.queue.pop() {
-                    steal(&self.state.queue, &self.local);
-                    return Some(r);
-                }
-
-                // Try stealing from other runners.
-                let local_queues = self.state.local_queues.read().unwrap();
-
-                // Pick a random starting point in the iterator list and rotate the list.
-                let n = local_queues.len();
-                let start = fastrand::usize(..n);
-                let iter = local_queues
-                    .iter()
-                    .chain(local_queues.iter())
-                    .skip(start)
-                    .take(n);
-
-                // Remove this runner's local queue.
-                let iter = iter.filter(|local| !Arc::ptr_eq(local, &self.local));
-
-                // Try stealing from each local queue in the list.
-                for local in iter {
-                    steal(local, &self.local);
-                    if let Ok(r) = self.local.pop() {
-                        return Some(r);
-                    }
-                }
-
-                None
-            })
-            .await;
-
-        // Bump the tick counter.
-        let ticks = self.ticks.fetch_add(1, Ordering::SeqCst);
-
-        if ticks % 64 == 0 {
-            // Steal tasks from the global queue to ensure fair task scheduling.
-            steal(&self.state.queue, &self.local);
-        }
-
-        runnable
-    }
-}
-
-impl Drop for Runner<'_> {
-    fn drop(&mut self) {
-        // Remove the local queue.
-        self.state
-            .local_queues
-            .write()
-            .unwrap()
-            .retain(|local| !Arc::ptr_eq(local, &self.local));
-
-        // Re-schedule remaining tasks in the local queue.
-        while let Ok(r) = self.local.pop() {
-            r.schedule();
-        }
-    }
-}
-
-/// Steals some items from one queue into another.
-fn steal<T>(src: &ConcurrentQueue<T>, dest: &ConcurrentQueue<T>) {
-    // Half of `src`'s length rounded up.
-    let mut count = (src.len() + 1) / 2;
-
-    if count > 0 {
-        // Don't steal more than fits into the queue.
-        if let Some(cap) = dest.capacity() {
-            count = count.min(cap - dest.len());
-        }
-
-        // Steal tasks.
-        for _ in 0..count {
-            if let Ok(t) = src.pop() {
-                assert!(dest.push(t).is_ok());
-            } else {
-                break;
             }
         }
     }
