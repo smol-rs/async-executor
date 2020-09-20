@@ -1,3 +1,7 @@
+# Version 1.2.0
+
+- Update `async-task` to v4.
+
 # Version 1.1.1
 
 - Replace `AtomicU64` with `AtomicUsize`.
