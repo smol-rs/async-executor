@@ -13,7 +13,7 @@ categories = ["asynchronous", "concurrency"]
 readme = "README.md"
 
 [dependencies]
-async-task = { path = "../async-task" }
+async-task = "4.0.0"
 concurrent-queue = "1.2.2"
 fastrand = "1.3.4"
 futures-lite = "1.0.0"

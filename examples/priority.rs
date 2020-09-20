@@ -18,23 +18,23 @@ enum Priority {
 /// An executor with task priorities.
 ///
 /// Tasks with lower priorities only get polled when there are no tasks with higher priorities.
-struct PriorityExecutor<'a> {
-    ex: [Executor<'a>; 3],
+struct PriorityExecutor {
+    ex: [Executor; 3],
 }
 
-impl<'a> PriorityExecutor<'a> {
+impl PriorityExecutor {
     /// Creates a new executor.
-    const fn new() -> PriorityExecutor<'a> {
+    const fn new() -> PriorityExecutor {
         PriorityExecutor {
             ex: [Executor::new(), Executor::new(), Executor::new()],
         }
     }
 
     /// Spawns a task with the given priority.
-    fn spawn<T: Send + 'a>(
+    fn spawn<T: Send + 'static>(
         &self,
         priority: Priority,
-        future: impl Future<Output = T> + Send + 'a,
+        future: impl Future<Output = T> + Send + 'static,
     ) -> Task<T> {
         self.ex[priority as usize].spawn(future)
     }
@@ -59,7 +59,7 @@ impl<'a> PriorityExecutor<'a> {
 }
 
 fn main() {
-    static EX: PriorityExecutor<'_> = PriorityExecutor::new();
+    static EX: PriorityExecutor = PriorityExecutor::new();
 
     // Spawn a thread running the executor forever.
     thread::spawn(|| future::block_on(EX.run()));
