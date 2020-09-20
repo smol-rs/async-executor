@@ -102,6 +102,8 @@ impl Executor {
         future: impl Future<Output = T> + Send + 'static,
     ) -> Task<T> {
         let mut active = self.state().active.lock().unwrap();
+
+        // Remove the task from the set of active tasks when the future finishes.
         let index = active.next_vacant();
         let state = self.state().clone();
         let future = async move {
@@ -109,8 +111,10 @@ impl Executor {
             future.await
         };
 
+        // Create the task and register it in the set of active tasks.
         let (runnable, task) = async_task::spawn(future, self.schedule());
         active.insert(runnable.waker());
+
         runnable.schedule();
         task
     }
@@ -304,6 +308,8 @@ impl LocalExecutor {
     /// ```
     pub fn spawn<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> Task<T> {
         let mut active = self.inner().state().active.lock().unwrap();
+
+        // Remove the task from the set of active tasks when the future finishes.
         let index = active.next_vacant();
         let state = self.inner().state().clone();
         let future = async move {
@@ -311,8 +317,10 @@ impl LocalExecutor {
             future.await
         };
 
+        // Create the task and register it in the set of active tasks.
         let (runnable, task) = async_task::spawn_local(future, self.schedule());
         active.insert(runnable.waker());
+
         runnable.schedule();
         task
     }
