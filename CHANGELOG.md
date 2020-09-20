@@ -1,3 +1,7 @@
+# Version 1.3.0
+
+- Parametrize executors over a lifetime to allow spawning non-`static` futures.
+
 # Version 1.2.0
 
 - Update `async-task` to v4.
