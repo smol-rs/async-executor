@@ -61,14 +61,21 @@ pub use async_task::Task;
 ///     }));
 /// ```
 #[derive(Debug)]
-pub struct Executor {
+pub struct Executor<'a> {
+    /// The executor state.
     state: once_cell::sync::OnceCell<Arc<State>>,
+
+    /// Makes the `'a` lifetime invariant.
+    _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
 }
 
-impl UnwindSafe for Executor {}
-impl RefUnwindSafe for Executor {}
+unsafe impl Send for Executor<'_> {}
+unsafe impl Sync for Executor<'_> {}
 
-impl Executor {
+impl UnwindSafe for Executor<'_> {}
+impl RefUnwindSafe for Executor<'_> {}
+
+impl<'a> Executor<'a> {
     /// Creates a new executor.
     ///
     /// # Examples
@@ -78,9 +85,10 @@ impl Executor {
     ///
     /// let ex = Executor::new();
     /// ```
-    pub const fn new() -> Executor {
+    pub const fn new() -> Executor<'a> {
         Executor {
             state: once_cell::sync::OnceCell::new(),
+            _marker: PhantomData,
         }
     }
 
@@ -97,10 +105,7 @@ impl Executor {
     ///     println!("Hello world");
     /// });
     /// ```
-    pub fn spawn<T: Send + 'static>(
-        &self,
-        future: impl Future<Output = T> + Send + 'static,
-    ) -> Task<T> {
+    pub fn spawn<T: Send + 'a>(&self, future: impl Future<Output = T> + Send + 'a) -> Task<T> {
         let mut active = self.state().active.lock().unwrap();
 
         // Remove the task from the set of active tasks when the future finishes.
@@ -112,7 +117,7 @@ impl Executor {
         };
 
         // Create the task and register it in the set of active tasks.
-        let (runnable, task) = async_task::spawn(future, self.schedule());
+        let (runnable, task) = unsafe { async_task::spawn_unchecked(future, self.schedule()) };
         active.insert(runnable.waker());
 
         runnable.schedule();
@@ -226,7 +231,7 @@ impl Executor {
     }
 }
 
-impl Drop for Executor {
+impl Drop for Executor<'_> {
     fn drop(&mut self) {
         if let Some(state) = self.state.get() {
             let mut active = state.active.lock().unwrap();
@@ -242,8 +247,8 @@ impl Drop for Executor {
     }
 }
 
-impl Default for Executor {
-    fn default() -> Executor {
+impl<'a> Default for Executor<'a> {
+    fn default() -> Executor<'a> {
         Executor::new()
     }
 }
@@ -265,18 +270,18 @@ impl Default for Executor {
 /// }));
 /// ```
 #[derive(Debug)]
-pub struct LocalExecutor {
+pub struct LocalExecutor<'a> {
     /// The inner executor.
-    inner: once_cell::unsync::OnceCell<Executor>,
+    inner: once_cell::unsync::OnceCell<Executor<'a>>,
 
-    /// Make sure the type is `!Send` and `!Sync`.
+    /// Makes the type `!Send` and `!Sync`.
     _marker: PhantomData<Rc<()>>,
 }
 
-impl UnwindSafe for LocalExecutor {}
-impl RefUnwindSafe for LocalExecutor {}
+impl UnwindSafe for LocalExecutor<'_> {}
+impl RefUnwindSafe for LocalExecutor<'_> {}
 
-impl LocalExecutor {
+impl<'a> LocalExecutor<'a> {
     /// Creates a single-threaded executor.
     ///
     /// # Examples
@@ -286,7 +291,7 @@ impl LocalExecutor {
     ///
     /// let local_ex = LocalExecutor::new();
     /// ```
-    pub const fn new() -> LocalExecutor {
+    pub const fn new() -> LocalExecutor<'a> {
         LocalExecutor {
             inner: once_cell::unsync::OnceCell::new(),
             _marker: PhantomData,
@@ -306,7 +311,7 @@ impl LocalExecutor {
     ///     println!("Hello world");
     /// });
     /// ```
-    pub fn spawn<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> Task<T> {
+    pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
         let mut active = self.inner().state().active.lock().unwrap();
 
         // Remove the task from the set of active tasks when the future finishes.
@@ -318,7 +323,7 @@ impl LocalExecutor {
         };
 
         // Create the task and register it in the set of active tasks.
-        let (runnable, task) = async_task::spawn_local(future, self.schedule());
+        let (runnable, task) = unsafe { async_task::spawn_unchecked(future, self.schedule()) };
         active.insert(runnable.waker());
 
         runnable.schedule();
@@ -399,13 +404,13 @@ impl LocalExecutor {
     }
 
     /// Returns a reference to the inner executor.
-    fn inner(&self) -> &Executor {
+    fn inner(&self) -> &Executor<'a> {
         self.inner.get_or_init(|| Executor::new())
     }
 }
 
-impl Default for LocalExecutor {
-    fn default() -> LocalExecutor {
+impl<'a> Default for LocalExecutor<'a> {
+    fn default() -> LocalExecutor<'a> {
         LocalExecutor::new()
     }
 }

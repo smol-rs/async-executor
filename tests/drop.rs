@@ -1,14 +1,15 @@
+use std::mem;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::task::{Poll, Waker};
 
-use async_executor::Executor;
+use async_executor::{Task,Executor};
 use futures_lite::future;
 use once_cell::sync::Lazy;
 
 #[test]
-fn smoke() {
+fn executor_cancels_everything() {
     static DROP: AtomicUsize = AtomicUsize::new(0);
     static WAKER: Lazy<Mutex<Option<Waker>>> = Lazy::new(|| Default::default());
 
@@ -35,6 +36,49 @@ fn smoke() {
 
     assert!(catch_unwind(|| future::block_on(task)).is_err());
     assert_eq!(DROP.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn leaked_executor_leaks_everything() {
+    static DROP: AtomicUsize = AtomicUsize::new(0);
+    static WAKER: Lazy<Mutex<Option<Waker>>> = Lazy::new(|| Default::default());
+
+    let ex = Executor::new();
+
+    let task = ex.spawn(async {
+        let _guard = CallOnDrop(|| {
+            DROP.fetch_add(1, Ordering::SeqCst);
+        });
+
+        future::poll_fn(|cx| {
+            *WAKER.lock().unwrap() = Some(cx.waker().clone());
+            Poll::Pending::<()>
+        })
+        .await;
+    });
+
+    future::block_on(ex.tick());
+    assert!(WAKER.lock().unwrap().is_some());
+    assert_eq!(DROP.load(Ordering::SeqCst), 0);
+
+    mem::forget(ex);
+    assert_eq!(DROP.load(Ordering::SeqCst), 0);
+
+    assert!(future::block_on(future::poll_once(task)).is_none());
+    assert_eq!(DROP.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn await_task_after_dropping_executor() {
+    let s: String = "hello".into();
+
+    let ex = Executor::new();
+    let task: Task<&str> = ex.spawn(async { &*s });
+    assert!(ex.try_tick());
+
+    drop(ex);
+    assert_eq!(future::block_on(task), "hello");
+    drop(s);
 }
 
 struct CallOnDrop<F: Fn()>(F);
