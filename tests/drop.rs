@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::task::{Poll, Waker};
 
-use async_executor::{Task,Executor};
+use async_executor::{Executor, Task};
 use futures_lite::future;
 use once_cell::sync::Lazy;
 
@@ -79,6 +79,44 @@ fn await_task_after_dropping_executor() {
     drop(ex);
     assert_eq!(future::block_on(task), "hello");
     drop(s);
+}
+
+#[test]
+fn drop_executor_and_then_drop_finished_task() {
+    static DROP: AtomicUsize = AtomicUsize::new(0);
+
+    let ex = Executor::new();
+    let task = ex.spawn(async {
+        CallOnDrop(|| {
+            DROP.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    assert!(ex.try_tick());
+
+    assert_eq!(DROP.load(Ordering::SeqCst), 0);
+    drop(ex);
+    assert_eq!(DROP.load(Ordering::SeqCst), 0);
+    drop(task);
+    assert_eq!(DROP.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn drop_finished_task_and_then_drop_executor() {
+    static DROP: AtomicUsize = AtomicUsize::new(0);
+
+    let ex = Executor::new();
+    let task = ex.spawn(async {
+        CallOnDrop(|| {
+            DROP.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    assert!(ex.try_tick());
+
+    assert_eq!(DROP.load(Ordering::SeqCst), 0);
+    drop(task);
+    assert_eq!(DROP.load(Ordering::SeqCst), 1);
+    drop(ex);
+    assert_eq!(DROP.load(Ordering::SeqCst), 1);
 }
 
 struct CallOnDrop<F: Fn()>(F);
