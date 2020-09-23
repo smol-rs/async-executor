@@ -518,6 +518,7 @@ struct Sleepers {
 
 impl Sleepers {
     /// Inserts a new sleeping ticker.
+    #[inline]
     fn insert(&mut self, waker: &Waker) -> usize {
         let id = match self.free_ids.pop() {
             Some(id) => id,
@@ -535,6 +536,7 @@ impl Sleepers {
     /// Re-inserts a sleeping ticker's waker if it was notified.
     ///
     /// Returns `true` if the ticker was notified.
+    #[inline]
     fn update(&mut self, id: usize, waker: &Waker) -> bool {
         for item in &mut self.wakers {
             if item.0 == id {
@@ -552,6 +554,7 @@ impl Sleepers {
     /// Removes a previously inserted sleeping ticker.
     ///
     /// Returns `true` if the ticker was notified.
+    #[inline]
     fn remove(&mut self, id: usize) -> bool {
         self.count -= 1;
         self.free_ids.push(id);
@@ -566,6 +569,7 @@ impl Sleepers {
     }
 
     /// Returns `true` if a sleeping ticker is notified or no tickers are sleeping.
+    #[inline]
     fn is_notified(&self) -> bool {
         self.count == 0 || self.count > self.wakers.len()
     }
@@ -573,6 +577,7 @@ impl Sleepers {
     /// Returns notification waker for a sleeping ticker.
     ///
     /// If a ticker was notified already or there are no tickers, `None` will be returned.
+    #[inline]
     fn notify(&mut self) -> Option<Waker> {
         if self.wakers.len() == self.count {
             self.wakers.pop().map(|item| item.1)
@@ -606,6 +611,7 @@ impl Ticker<'_> {
     /// Moves the ticker into sleeping and unnotified state.
     ///
     /// Returns `false` if the ticker was already sleeping and unnotified.
+    #[inline]
     fn sleep(&mut self, waker: &Waker, state: &mut MutexGuard<'_, State>) -> bool {
         match self.sleeping {
             // Move to sleeping state.
@@ -624,6 +630,7 @@ impl Ticker<'_> {
     }
 
     /// Moves the ticker into woken state.
+    #[inline]
     fn wake(&mut self, state: &mut MutexGuard<'_, State>) {
         let id = mem::replace(&mut self.sleeping, 0);
         if id != 0 {
