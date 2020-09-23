@@ -523,8 +523,12 @@ impl Sleepers {
             Some(id) => id,
             None => self.count + 1,
         };
+        if self.count > self.wakers.len() {
+            self.wakers.push((id, waker.clone()));
+        } else {
+            waker.wake_by_ref();
+        }
         self.count += 1;
-        self.wakers.push((id, waker.clone()));
         id
     }
 
@@ -632,29 +636,26 @@ impl Ticker<'_> {
     async fn runnable(&mut self) -> Runnable {
         future::poll_fn(|cx| {
             let mut state = self.state.lock().unwrap();
-            loop {
-                match state.queue.pop_front() {
-                    None => {
-                        // Move to sleeping and unnotified state.
-                        if !self.sleep(cx.waker(), &mut state) {
-                            // If already sleeping and unnotified, return.
-                            return Poll::Pending;
-                        }
-                    }
-                    Some(r) => {
-                        // Wake up.
-                        self.wake(&mut state);
 
-                        // Notify another ticker now to pick up where this ticker left off, just in
-                        // case running the task takes a long time.
-                        let waker = state.notify();
+            match state.queue.pop_front() {
+                None => {
+                    // Move to sleeping and unnotified state.
+                    self.sleep(cx.waker(), &mut state);
+                    Poll::Pending
+                }
+                Some(r) => {
+                    // Wake up.
+                    self.wake(&mut state);
 
-                        drop(state);
-                        if let Some(w) = waker {
-                            w.wake();
-                        }
-                        return Poll::Ready(r);
+                    // Notify another ticker now to pick up where this ticker left off, just in
+                    // case running the task takes a long time.
+                    let waker = state.notify();
+
+                    drop(state);
+                    if let Some(w) = waker {
+                        w.wake();
                     }
+                    Poll::Ready(r)
                 }
             }
         })
