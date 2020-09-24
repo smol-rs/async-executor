@@ -20,13 +20,14 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::mem;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::task::{Poll, Waker};
 
 use async_task::Runnable;
@@ -106,7 +107,7 @@ impl<'a> Executor<'a> {
     /// });
     /// ```
     pub fn spawn<T: Send + 'a>(&self, future: impl Future<Output = T> + Send + 'a) -> Task<T> {
-        let mut state = self.state().lock().unwrap();
+        let mut state = self.state().lock();
 
         // Remove the task from the set of active tasks when the future finishes.
         let future = {
@@ -118,11 +119,11 @@ impl<'a> Executor<'a> {
                     let poll = future.as_mut().poll(cx);
                     if poll.is_pending() {
                         if index.is_none() {
-                            index = Some(state.lock().unwrap().active.insert(cx.waker().clone()));
+                            index = Some(state.lock().active.insert(cx.waker().clone()));
                         }
                     } else {
                         if let Some(index) = index {
-                            state.lock().unwrap().active.remove(index);
+                            state.lock().active.remove(index);
                         }
                     }
                     poll
@@ -162,7 +163,7 @@ impl<'a> Executor<'a> {
     /// assert!(ex.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
-        let mut state = self.state().lock().unwrap();
+        let mut state = self.state().lock();
 
         match state.queue.pop_front() {
             None => false,
@@ -246,7 +247,7 @@ impl<'a> Executor<'a> {
 
         // TODO(stjepang): If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock();
             state.queue.push_back(runnable);
             let waker = state.notify();
             drop(state);
@@ -266,7 +267,7 @@ impl<'a> Executor<'a> {
 impl Drop for Executor<'_> {
     fn drop(&mut self) {
         if let Some(state) = self.state.get() {
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock();
             let mut wakers = Vec::new();
             for i in 0..state.active.capacity() {
                 if let Some(w) = state.active.remove(i) {
@@ -277,7 +278,7 @@ impl Drop for Executor<'_> {
             for w in wakers {
                 w.wake();
             }
-            let runnables = mem::replace(&mut self.state().lock().unwrap().queue, VecDeque::new());
+            let runnables = mem::replace(&mut self.state().lock().queue, VecDeque::new());
             drop(runnables);
         }
     }
@@ -348,14 +349,14 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
-        let mut state = self.inner().state().lock().unwrap();
+        let mut state = self.inner().state().lock();
 
         // Remove the task from the set of active tasks when the future finishes.
         let future = {
             let index = state.active.next_vacant();
             let state = self.inner().state().clone();
             async move {
-                let _guard = CallOnDrop(move || drop(state.lock().unwrap().active.remove(index)));
+                let _guard = CallOnDrop(move || drop(state.lock().active.remove(index)));
                 future.await
             }
         };
@@ -437,7 +438,7 @@ impl<'a> LocalExecutor<'a> {
         let state = self.inner().state().clone();
 
         move |runnable| {
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock();
             state.queue.push_back(runnable);
             let waker = state.notify();
             drop(state);
@@ -642,7 +643,7 @@ impl Ticker<'_> {
     /// Waits for the next runnable task to run.
     async fn runnable(&mut self) -> Runnable {
         future::poll_fn(|cx| {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
 
             match state.queue.pop_front() {
                 None => {
@@ -675,7 +676,7 @@ impl Drop for Ticker<'_> {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         let id = self.sleeping;
         if id != 0 {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             let notified = state.sleepers.remove(id);
             state.notified = state.sleepers.is_notified();
 
