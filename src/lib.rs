@@ -20,7 +20,6 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use parking_lot::{Mutex, MutexGuard};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -32,6 +31,7 @@ use std::task::{Poll, Waker};
 
 use async_task::Runnable;
 use futures_lite::{future, FutureExt};
+use parking_lot::{Mutex, MutexGuard};
 use vec_arena::Arena;
 
 #[doc(no_inline)]
@@ -107,8 +107,6 @@ impl<'a> Executor<'a> {
     /// });
     /// ```
     pub fn spawn<T: Send + 'a>(&self, future: impl Future<Output = T> + Send + 'a) -> Task<T> {
-        let mut state = self.state().lock();
-
         // Remove the task from the set of active tasks when the future finishes.
         let future = {
             let state = self.state().clone();
@@ -134,14 +132,7 @@ impl<'a> Executor<'a> {
 
         // Create the task and register it in the set of active tasks.
         let (runnable, task) = unsafe { async_task::spawn_unchecked(future, self.schedule()) };
-        state.active.insert(runnable.waker());
-
-        state.queue.push_back(runnable);
-        let waker = state.notify();
-        drop(state);
-        if let Some(w) = waker {
-            w.wake();
-        }
+        runnable.schedule();
         task
     }
 
@@ -170,12 +161,17 @@ impl<'a> Executor<'a> {
             Some(runnable) => {
                 // Notify another ticker now to pick up where this ticker left off, just in case
                 // running the task takes a long time.
-                let waker = state.notify();
+                let waker = if state.queue.is_empty() {
+                    None
+                } else {
+                    state.notify()
+                };
 
                 drop(state);
                 if let Some(w) = waker {
                     w.wake();
                 }
+
                 // Run the task.
                 runnable.run();
                 true
@@ -249,7 +245,11 @@ impl<'a> Executor<'a> {
         move |runnable| {
             let mut state = state.lock();
             state.queue.push_back(runnable);
-            let waker = state.notify();
+            let waker = if state.queue.is_empty() {
+                None
+            } else {
+                state.notify()
+            };
             drop(state);
             if let Some(w) = waker {
                 w.wake();
@@ -349,24 +349,32 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
-        let mut state = self.inner().state().lock();
-
         // Remove the task from the set of active tasks when the future finishes.
         let future = {
-            let index = state.active.next_vacant();
             let state = self.inner().state().clone();
             async move {
-                let _guard = CallOnDrop(move || drop(state.lock().active.remove(index)));
-                future.await
+                futures_lite::pin!(future);
+                let mut index = None;
+                future::poll_fn(|cx| {
+                    let poll = future.as_mut().poll(cx);
+                    if poll.is_pending() {
+                        if index.is_none() {
+                            index = Some(state.lock().active.insert(cx.waker().clone()));
+                        }
+                    } else {
+                        if let Some(index) = index {
+                            state.lock().active.remove(index);
+                        }
+                    }
+                    poll
+                })
+                .await
             }
         };
 
         // Create the task and register it in the set of active tasks.
         let (runnable, task) = unsafe { async_task::spawn_unchecked(future, self.schedule()) };
-        state.active.insert(runnable.waker());
-
-        state.queue.push_back(runnable);
-        state.notify();
+        runnable.schedule();
         task
     }
 
