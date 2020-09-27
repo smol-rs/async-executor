@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::task::{Poll, Waker};
 
 use async_task::Runnable;
-use futures_lite::{future, FutureExt};
+use futures_lite::{future, pin, FutureExt};
 use parking_lot::{Mutex, MutexGuard};
 use vec_arena::Arena;
 
@@ -107,37 +107,7 @@ impl<'a> Executor<'a> {
     /// });
     /// ```
     pub fn spawn<T: Send + 'a>(&self, future: impl Future<Output = T> + Send + 'a) -> Task<T> {
-        unsafe { self.spawn_unchecked(future) }
-    }
-
-    unsafe fn spawn_unchecked<T>(&self, future: impl Future<Output = T>) -> Task<T> {
-        // Remove the task from the set of active tasks when the future finishes.
-        let future = {
-            let state = self.state().clone();
-            async move {
-                futures_lite::pin!(future);
-                let mut index = None;
-                future::poll_fn(|cx| {
-                    let poll = future.as_mut().poll(cx);
-                    if poll.is_pending() {
-                        if index.is_none() {
-                            index = Some(state.lock().active.insert(cx.waker().clone()));
-                        }
-                    } else {
-                        if let Some(index) = index {
-                            state.lock().active.remove(index);
-                        }
-                    }
-                    poll
-                })
-                .await
-            }
-        };
-
-        // Create the task and register it in the set of active tasks.
-        let (runnable, task) = async_task::spawn_unchecked(future, self.schedule());
-        runnable.schedule();
-        task
+        unsafe { spawn_unchecked(self.state(), future) }
     }
 
     /// Attempts to run a task if at least one is scheduled.
@@ -158,20 +128,7 @@ impl<'a> Executor<'a> {
     /// assert!(ex.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
-        let mut state = self.state().lock();
-
-        match state.queue.pop_front() {
-            None => false,
-            Some(runnable) => {
-                // Notify another ticker now to pick up where this ticker left off, just in case
-                // running the task takes a long time.
-                notify(state);
-
-                // Run the task.
-                runnable.run();
-                true
-            }
-        }
+        Ticker::new(self.state()).try_tick()
     }
 
     /// Run a single task.
@@ -194,8 +151,7 @@ impl<'a> Executor<'a> {
     /// future::block_on(ex.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
-        let runnable = Ticker::new(self.state()).runnable().await;
-        runnable.run();
+        Ticker::new(self.state()).tick().await;
     }
 
     /// Runs the executor until the given future completes.
@@ -214,14 +170,12 @@ impl<'a> Executor<'a> {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        let mut ticker = Ticker::new(self.state());
-
         // A future that runs tasks forever.
         let run_forever = async {
+            let mut ticker = Ticker::new(self.state());
             loop {
                 for _ in 0..200 {
-                    let runnable = ticker.runnable().await;
-                    runnable.run();
+                    ticker.tick().await;
                 }
                 future::yield_now().await;
             }
@@ -229,18 +183,6 @@ impl<'a> Executor<'a> {
 
         // Run `future` and `run_forever` concurrently until `future` completes.
         future.or(run_forever).await
-    }
-
-    /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
-        let state = self.state().clone();
-
-        // TODO(stjepang): If possible, push into the current local queue and notify the ticker.
-        move |runnable| {
-            let mut state = state.lock();
-            state.queue.push_back(runnable);
-            notify(state);
-        }
     }
 
     /// Returns a reference to the inner state.
@@ -252,19 +194,7 @@ impl<'a> Executor<'a> {
 impl Drop for Executor<'_> {
     fn drop(&mut self) {
         if let Some(state) = self.state.get() {
-            let mut state = state.lock();
-            let mut wakers = Vec::new();
-            for i in 0..state.active.capacity() {
-                if let Some(w) = state.active.remove(i) {
-                    wakers.push(w);
-                }
-            }
-            drop(state);
-            for w in wakers {
-                w.wake();
-            }
-            let runnables = mem::replace(&mut self.state().lock().queue, VecDeque::new());
-            drop(runnables);
+            destroy(state);
         }
     }
 }
@@ -334,7 +264,7 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
-        unsafe { self.inner().spawn_unchecked(future) }
+        unsafe { spawn_unchecked(self.inner().state(), future) }
     }
 
     /// Attempts to run a task if at least one is scheduled.
@@ -418,110 +348,102 @@ struct State {
     /// The global queue.
     queue: VecDeque<Runnable>,
 
-    /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
-    notified: bool,
-
-    /// A list of sleeping tickers.
-    sleepers: Sleepers,
-
     /// Currently active tasks.
     active: Arena<Waker>,
+
+    /// Number of sleeping tickers (both notified and unnotified).
+    sleeping: usize,
+
+    /// IDs and wakers of sleeping unnotified tickers.
+    ///
+    /// A sleeping ticker is notified when its waker is missing from this list.
+    wakers: Vec<(u64, Waker)>,
+
+    /// ID generator.
+    id_gen: u64,
+}
+
+/// Spawns a task onto the executor.
+unsafe fn spawn_unchecked<T>(
+    state: &Arc<Mutex<State>>,
+    future: impl Future<Output = T>,
+) -> Task<T> {
+    // Remove the task from the set of active tasks when the future finishes.
+    let future = {
+        let state = state.clone();
+        async move {
+            pin!(future);
+            let mut index = None;
+            future::poll_fn(|cx| {
+                let poll = future.as_mut().poll(cx);
+                if poll.is_pending() {
+                    if index.is_none() {
+                        index = Some(state.lock().active.insert(cx.waker().clone()));
+                    }
+                } else {
+                    if let Some(index) = index {
+                        state.lock().active.remove(index);
+                    }
+                }
+                poll
+            })
+            .await
+        }
+    };
+
+    // Create the task and register it in the set of active tasks.
+    let (runnable, task) = async_task::spawn_unchecked(future, schedule(state));
+    runnable.schedule();
+    task
+}
+
+/// Returns a function that schedules a runnable task when it gets woken up.
+fn schedule(state: &Arc<Mutex<State>>) -> impl Fn(Runnable) + Send + Sync + 'static {
+    let state = state.clone();
+
+    // TODO(stjepang): If possible, push into the current local queue and notify the ticker.
+    move |runnable| {
+        let mut state = state.lock();
+        state.queue.push_back(runnable);
+        notify(state);
+    }
+}
+
+/// Drops all unfinished tasks.
+fn destroy(state: &Arc<Mutex<State>>) {
+    // Collect wakers of unfinished tasks.
+    let mut wakers = Vec::new();
+    {
+        let mut state = state.lock();
+        for i in 0..state.active.capacity() {
+            if let Some(w) = state.active.remove(i) {
+                wakers.push(w);
+            }
+        }
+    }
+
+    // Wake unfinished tasks.
+    for w in wakers {
+        w.wake();
+    }
+
+    // Drop unfinished tasks.
+    mem::take(&mut state.lock().queue);
 }
 
 /// Notifies a sleeping ticker.
 #[inline]
 fn notify(mut state: MutexGuard<'_, State>) {
-    if !state.notified {
-        state.notified = true;
-        let waker = state.sleepers.notify();
-        drop(state);
+    let waker = if state.wakers.len() == state.sleeping {
+        state.wakers.pop().map(|item| item.1)
+    } else {
+        None
+    };
 
-        if let Some(w) = waker {
-            w.wake();
-        }
-    }
-}
+    drop(state);
 
-/// A list of sleeping tickers.
-#[derive(Debug, Default)]
-struct Sleepers {
-    /// Number of sleeping tickers (both notified and unnotified).
-    count: usize,
-
-    /// IDs and wakers of sleeping unnotified tickers.
-    ///
-    /// A sleeping ticker is notified when its waker is missing from this list.
-    wakers: Vec<(usize, Waker)>,
-
-    /// Reclaimed IDs.
-    free_ids: Vec<usize>,
-}
-
-impl Sleepers {
-    /// Inserts a new sleeping ticker.
-    #[inline]
-    fn insert(&mut self, waker: &Waker) -> usize {
-        let id = match self.free_ids.pop() {
-            Some(id) => id,
-            None => self.count + 1,
-        };
-        if self.count > self.wakers.len() {
-            self.wakers.push((id, waker.clone()));
-        } else {
-            waker.wake_by_ref();
-        }
-        self.count += 1;
-        id
-    }
-
-    /// Re-inserts a sleeping ticker's waker if it was notified.
-    #[inline]
-    fn update(&mut self, id: usize, waker: &Waker) {
-        for item in &mut self.wakers {
-            if item.0 == id {
-                if !item.1.will_wake(waker) {
-                    item.1 = waker.clone();
-                }
-                return;
-            }
-        }
-
-        self.wakers.push((id, waker.clone()));
-    }
-
-    /// Removes a previously inserted sleeping ticker.
-    ///
-    /// Returns `true` if the ticker was notified.
-    #[inline]
-    fn remove(&mut self, id: usize) -> bool {
-        self.count -= 1;
-        self.free_ids.push(id);
-
-        for i in (0..self.wakers.len()).rev() {
-            if self.wakers[i].0 == id {
-                self.wakers.remove(i);
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Returns `true` if a sleeping ticker is notified or no tickers are sleeping.
-    #[inline]
-    fn is_notified(&self) -> bool {
-        self.count == 0 || self.count > self.wakers.len()
-    }
-
-    /// Returns notification waker for a sleeping ticker.
-    ///
-    /// If a ticker was notified already or there are no tickers, `None` will be returned.
-    #[inline]
-    fn notify(&mut self) -> Option<Waker> {
-        if self.wakers.len() == self.count {
-            self.wakers.pop().map(|item| item.1)
-        } else {
-            None
-        }
+    if let Some(w) = waker {
+        w.wake();
     }
 }
 
@@ -537,64 +459,118 @@ struct Ticker<'a> {
     /// 1) Woken.
     /// 2a) Sleeping and unnotified.
     /// 2b) Sleeping and notified.
-    sleeping: usize,
+    sleeping: Option<u64>,
 }
 
 impl Ticker<'_> {
     /// Creates a ticker.
     fn new(state: &Mutex<State>) -> Ticker<'_> {
-        Ticker { state, sleeping: 0 }
+        Ticker {
+            state,
+            sleeping: None,
+        }
+    }
+
+    /// Attempts to run a task if at least one is scheduled.
+    fn try_tick(&self) -> bool {
+        let mut state = self.state.lock();
+
+        match state.queue.pop_front() {
+            None => false,
+            Some(runnable) => {
+                // Notify another ticker now to pick up where this ticker left off, just in case
+                // running the task takes a long time.
+                notify(state);
+
+                // Run the task.
+                runnable.run();
+                true
+            }
+        }
     }
 
     /// Waits for the next runnable task to run.
-    async fn runnable(&mut self) -> Runnable {
-        future::poll_fn(|cx| {
+    async fn tick(&mut self) {
+        let runnable = future::poll_fn(|cx| {
             let mut state = self.state.lock();
 
             match state.queue.pop_front() {
                 None => {
                     // Move to sleeping and unnotified state.
                     match self.sleeping {
-                        0 => self.sleeping = state.sleepers.insert(cx.waker()),
-                        id => state.sleepers.update(id, cx.waker()),
+                        None => {
+                            let id = state.id_gen;
+                            state.id_gen += 1;
+
+                            self.sleeping = Some(id);
+                            state.sleeping += 1;
+
+                            if state.sleeping > state.wakers.len() {
+                                state.wakers.push((id, cx.waker().clone()));
+                            } else {
+                                cx.waker().wake_by_ref();
+                            }
+                        }
+                        Some(id) => {
+                            for item in &mut state.wakers {
+                                if item.0 == id {
+                                    if !item.1.will_wake(cx.waker()) {
+                                        item.1 = cx.waker().clone();
+                                    }
+                                    return Poll::Pending;
+                                }
+                            }
+
+                            state.wakers.push((id, cx.waker().clone()));
+                        }
                     }
-                    state.notified = state.sleepers.is_notified();
 
                     Poll::Pending
                 }
                 Some(r) => {
                     // Wake up.
-                    let id = mem::replace(&mut self.sleeping, 0);
-                    if id != 0 {
-                        state.sleepers.remove(id);
-                        state.notified = state.sleepers.is_notified();
+                    if let Some(id) = self.sleeping.take() {
+                        state.sleeping -= 1;
+
+                        for i in (0..state.wakers.len()).rev() {
+                            if state.wakers[i].0 == id {
+                                state.wakers.remove(i);
+                                break;
+                            }
+                        }
                     }
 
-                    // Notify another ticker now to pick up where this ticker left off, just in
-                    // case running the task takes a long time.
+                    // Notify another ticker now to pick up where this ticker left off, just in case
+                    // running the task takes a long time.
                     notify(state);
 
                     Poll::Ready(r)
                 }
             }
         })
-        .await
+        .await;
+
+        // Run the task.
+        runnable.run();
     }
 }
 
 impl Drop for Ticker<'_> {
     fn drop(&mut self) {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
-        let id = self.sleeping;
-        if id != 0 {
+        if let Some(id) = self.sleeping {
             let mut state = self.state.lock();
-            let notified = state.sleepers.remove(id);
-            state.notified = state.sleepers.is_notified();
+            state.sleeping -= 1;
+
+            for i in (0..state.wakers.len()).rev() {
+                if state.wakers[i].0 == id {
+                    state.wakers.remove(i);
+                    return;
+                }
+            }
 
             // If this ticker was notified, then notify another ticker.
-            if notified {
-                notify(state);
-            }
+            notify(state);
         }
     }
 }
