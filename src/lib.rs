@@ -451,7 +451,7 @@ fn notify(mut state: MutexGuard<'_, State>) {
     }
 }
 
-/// Runs task one by one.
+/// Runs tasks one by one.
 #[derive(Debug)]
 struct Ticker<'a> {
     /// The scheduler.
