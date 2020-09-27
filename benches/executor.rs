@@ -12,7 +12,7 @@ const LIGHT_TASKS: usize = 25_000;
 static EX: Executor<'_> = Executor::new();
 
 fn run(f: impl FnOnce()) {
-    let (s, r) = smol::channel::bounded::<()>(1);
+    let (s, r) = async_channel::bounded::<()>(1);
     easy_parallel::Parallel::new()
         .each(0..num_cpus::get(), |_| future::block_on(EX.run(r.recv())))
         .finish(move || {
@@ -58,7 +58,7 @@ fn spawn_many(b: &mut test::Bencher) {
 
 #[bench]
 fn spawn_recursively(b: &mut test::Bencher) {
-    fn go<'a>(i: usize) -> impl Future<Output = ()> + Send + 'static {
+    fn go(i: usize) -> impl Future<Output = ()> + Send + 'static {
         async move {
             if i != 0 {
                 EX.spawn(async move {
