@@ -63,8 +63,8 @@ pub use async_task::Task;
 /// ```
 #[derive(Debug)]
 pub struct Executor<'a> {
-    /// The executor state.
-    state: once_cell::sync::OnceCell<Arc<Mutex<State>>>,
+    /// The inner scheduler.
+    sched: once_cell::sync::OnceCell<Arc<Scheduler>>,
 
     /// Makes the `'a` lifetime invariant.
     _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
@@ -88,7 +88,7 @@ impl<'a> Executor<'a> {
     /// ```
     pub const fn new() -> Executor<'a> {
         Executor {
-            state: once_cell::sync::OnceCell::new(),
+            sched: once_cell::sync::OnceCell::new(),
             _marker: PhantomData,
         }
     }
@@ -107,7 +107,7 @@ impl<'a> Executor<'a> {
     /// });
     /// ```
     pub fn spawn<T: Send + 'a>(&self, future: impl Future<Output = T> + Send + 'a) -> Task<T> {
-        unsafe { spawn_unchecked(self.state(), future) }
+        unsafe { self.sched().spawn_unchecked(future) }
     }
 
     /// Attempts to run a task if at least one is scheduled.
@@ -128,7 +128,7 @@ impl<'a> Executor<'a> {
     /// assert!(ex.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
-        Ticker::new(self.state()).try_tick()
+        Ticker::new(self.sched()).try_tick()
     }
 
     /// Run a single task.
@@ -151,7 +151,7 @@ impl<'a> Executor<'a> {
     /// future::block_on(ex.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
-        Ticker::new(self.state()).tick().await;
+        Ticker::new(self.sched()).tick().await;
     }
 
     /// Runs the executor until the given future completes.
@@ -172,7 +172,7 @@ impl<'a> Executor<'a> {
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         // A future that runs tasks forever.
         let run_forever = async {
-            let mut ticker = Ticker::new(self.state());
+            let mut ticker = Ticker::new(self.sched());
             loop {
                 for _ in 0..200 {
                     ticker.tick().await;
@@ -185,16 +185,16 @@ impl<'a> Executor<'a> {
         future.or(run_forever).await
     }
 
-    /// Returns a reference to the inner state.
-    fn state(&self) -> &Arc<Mutex<State>> {
-        self.state.get_or_init(|| Default::default())
+    /// Returns a reference to the inner scheduler.
+    fn sched(&self) -> &Arc<Scheduler> {
+        self.sched.get_or_init(|| Default::default())
     }
 }
 
 impl Drop for Executor<'_> {
     fn drop(&mut self) {
-        if let Some(state) = self.state.get() {
-            destroy(state);
+        if let Some(sched) = self.sched.get() {
+            sched.destroy();
         }
     }
 }
@@ -264,7 +264,7 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
-        unsafe { spawn_unchecked(self.inner().state(), future) }
+        unsafe { self.inner().sched().spawn_unchecked(future) }
     }
 
     /// Attempts to run a task if at least one is scheduled.
@@ -342,7 +342,13 @@ impl<'a> Default for LocalExecutor<'a> {
     }
 }
 
-/// The state of a executor.
+/// Scheduler shared by the executor and wakers.
+#[derive(Debug, Default)]
+struct Scheduler {
+    state: Mutex<State>,
+}
+
+/// The state of a scheduler.
 #[derive(Debug, Default)]
 struct State {
     /// The global queue.
@@ -363,72 +369,70 @@ struct State {
     id_gen: u64,
 }
 
-/// Spawns a task onto the executor.
-unsafe fn spawn_unchecked<T>(
-    state: &Arc<Mutex<State>>,
-    future: impl Future<Output = T>,
-) -> Task<T> {
-    // Remove the task from the set of active tasks when the future finishes.
-    let future = {
-        let state = state.clone();
-        async move {
-            pin!(future);
-            let mut index = None;
-            future::poll_fn(|cx| {
-                let poll = future.as_mut().poll(cx);
-                if poll.is_pending() {
-                    if index.is_none() {
-                        index = Some(state.lock().active.insert(cx.waker().clone()));
+impl Scheduler {
+    /// Spawns a task onto the scheduler.
+    unsafe fn spawn_unchecked<T>(
+        self: &Arc<Scheduler>,
+        future: impl Future<Output = T>,
+    ) -> Task<T> {
+        // Remove the task from the set of active tasks when the future finishes.
+        let future = {
+            let sched = self.clone();
+            async move {
+                pin!(future);
+                let mut index = None;
+                future::poll_fn(|cx| {
+                    let poll = future.as_mut().poll(cx);
+                    if poll.is_pending() {
+                        if index.is_none() {
+                            index = Some(sched.state.lock().active.insert(cx.waker().clone()));
+                        }
+                    } else {
+                        if let Some(index) = index {
+                            sched.state.lock().active.remove(index);
+                        }
                     }
-                } else {
-                    if let Some(index) = index {
-                        state.lock().active.remove(index);
-                    }
-                }
-                poll
-            })
-            .await
-        }
-    };
+                    poll
+                })
+                .await
+            }
+        };
 
-    // Create the task and register it in the set of active tasks.
-    let (runnable, task) = async_task::spawn_unchecked(future, schedule(state));
-    runnable.schedule();
-    task
-}
+        // Create a function that schedules runnable tasks.
+        let sched = self.clone();
+        let schedule = move |runnable| {
+            let mut state = sched.state.lock();
+            state.queue.push_back(runnable);
+            notify(state);
+        };
 
-/// Returns a function that schedules a runnable task when it gets woken up.
-fn schedule(state: &Arc<Mutex<State>>) -> impl Fn(Runnable) + Send + Sync + 'static {
-    let state = state.clone();
-
-    // TODO(stjepang): If possible, push into the current local queue and notify the ticker.
-    move |runnable| {
-        let mut state = state.lock();
-        state.queue.push_back(runnable);
-        notify(state);
+        // Create the task and register it in the set of active tasks.
+        let (runnable, task) = async_task::spawn_unchecked(future, schedule);
+        runnable.schedule();
+        task
     }
-}
 
-/// Drops all unfinished tasks.
-fn destroy(state: &Arc<Mutex<State>>) {
-    // Collect wakers of unfinished tasks.
-    let mut wakers = Vec::new();
-    {
-        let mut state = state.lock();
-        for i in 0..state.active.capacity() {
-            if let Some(w) = state.active.remove(i) {
-                wakers.push(w);
+    /// Drops all unfinished tasks.
+    fn destroy(self: &Arc<Scheduler>) {
+        // Collect wakers of unfinished tasks.
+        let mut wakers = Vec::new();
+        {
+            let mut state = self.state.lock();
+            for i in 0..state.active.capacity() {
+                if let Some(w) = state.active.remove(i) {
+                    wakers.push(w);
+                }
             }
         }
-    }
 
-    // Wake unfinished tasks.
-    for w in wakers {
-        w.wake();
-    }
+        // Wake unfinished tasks.
+        for w in wakers {
+            w.wake();
+        }
 
-    // Drop unfinished tasks.
-    mem::take(&mut state.lock().queue);
+        // Drop unfinished tasks.
+        mem::take(&mut self.state.lock().queue);
+    }
 }
 
 /// Notifies a sleeping ticker.
@@ -450,8 +454,8 @@ fn notify(mut state: MutexGuard<'_, State>) {
 /// Runs task one by one.
 #[derive(Debug)]
 struct Ticker<'a> {
-    /// The executor state.
-    state: &'a Mutex<State>,
+    /// The scheduler.
+    sched: &'a Scheduler,
 
     /// Set to a non-zero sleeper ID when in sleeping state.
     ///
@@ -464,16 +468,16 @@ struct Ticker<'a> {
 
 impl Ticker<'_> {
     /// Creates a ticker.
-    fn new(state: &Mutex<State>) -> Ticker<'_> {
+    fn new(sched: &Scheduler) -> Ticker<'_> {
         Ticker {
-            state,
+            sched,
             sleeping: None,
         }
     }
 
     /// Attempts to run a task if at least one is scheduled.
     fn try_tick(&self) -> bool {
-        let mut state = self.state.lock();
+        let mut state = self.sched.state.lock();
 
         match state.queue.pop_front() {
             None => false,
@@ -492,7 +496,7 @@ impl Ticker<'_> {
     /// Waits for the next runnable task to run.
     async fn tick(&mut self) {
         let runnable = future::poll_fn(|cx| {
-            let mut state = self.state.lock();
+            let mut state = self.sched.state.lock();
 
             match state.queue.pop_front() {
                 None => {
@@ -559,7 +563,7 @@ impl Drop for Ticker<'_> {
     fn drop(&mut self) {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         if let Some(id) = self.sleeping {
-            let mut state = self.state.lock();
+            let mut state = self.sched.state.lock();
             state.sleeping -= 1;
 
             for i in (0..state.wakers.len()).rev() {
