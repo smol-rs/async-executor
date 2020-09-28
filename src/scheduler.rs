@@ -134,13 +134,13 @@ pub(crate) struct Ticker<'a> {
     /// The scheduler.
     sched: &'a Scheduler,
 
-    /// Set to a non-zero sleeper ID when in sleeping state.
+    /// Sleeper ID and index in the wakers list when in sleeping state.
     ///
     /// States a ticker can be in:
     /// 1) Woken.
     /// 2a) Sleeping and unnotified.
     /// 2b) Sleeping and notified.
-    sleeping: Option<u64>,
+    sleeping: Option<(u64, usize)>,
 }
 
 impl Ticker<'_> {
@@ -175,25 +175,27 @@ impl Ticker<'_> {
                             let id = state.id_gen;
                             state.id_gen += 1;
 
-                            self.sleeping = Some(id);
+                            self.sleeping = Some((id, state.wakers.len()));
                             state.sleeping += 1;
 
                             if state.sleeping > state.wakers.len() {
                                 state.wakers.push((id, cx.waker().clone()));
                             } else {
+                                drop(state);
                                 cx.waker().wake_by_ref();
                             }
                         }
-                        Some(id) => {
-                            for item in &mut state.wakers {
-                                if item.0 == id {
-                                    if !item.1.will_wake(cx.waker()) {
-                                        item.1 = cx.waker().clone();
+                        Some((id, index)) => {
+                            if let Some((w_id, w)) = state.wakers.get_mut(index) {
+                                if *w_id == id {
+                                    if !w.will_wake(cx.waker()) {
+                                        *w = cx.waker().clone();
                                     }
                                     return Poll::Pending;
                                 }
                             }
 
+                            self.sleeping = Some((id, state.wakers.len()));
                             state.wakers.push((id, cx.waker().clone()));
                         }
                     }
@@ -202,13 +204,12 @@ impl Ticker<'_> {
                 }
                 Some(r) => {
                     // Wake up.
-                    if let Some(id) = self.sleeping.take() {
+                    if let Some((id, index)) = self.sleeping.take() {
                         state.sleeping -= 1;
 
-                        for i in (0..state.wakers.len()).rev() {
-                            if state.wakers[i].0 == id {
-                                state.wakers.remove(i);
-                                break;
+                        if let Some((w_id, _)) = state.wakers.get(index) {
+                            if *w_id == id {
+                                state.wakers.remove(index);
                             }
                         }
                     }
@@ -231,14 +232,13 @@ impl Ticker<'_> {
 impl Drop for Ticker<'_> {
     fn drop(&mut self) {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
-        if let Some(id) = self.sleeping {
+        if let Some((id, index)) = self.sleeping {
             let mut state = self.sched.state.lock();
             state.sleeping -= 1;
 
-            for i in (0..state.wakers.len()).rev() {
-                if state.wakers[i].0 == id {
-                    state.wakers.remove(i);
-                    return;
+            if let Some((w_id, _)) = state.wakers.get(index) {
+                if *w_id == id {
+                    state.wakers.remove(index);
                 }
             }
 
