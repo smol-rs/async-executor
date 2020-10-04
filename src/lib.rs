@@ -20,13 +20,12 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
+use std::cell::UnsafeCell;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
 use std::sync::Arc;
-
-use futures_lite::{future, FutureExt};
 
 use crate::scheduler::Scheduler;
 
@@ -65,7 +64,7 @@ pub struct Executor<'a> {
     sched: once_cell::sync::OnceCell<Arc<Scheduler>>,
 
     /// Makes the `'a` lifetime invariant.
-    _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
+    _marker: PhantomData<UnsafeCell<&'a ()>>,
 }
 
 unsafe impl Send for Executor<'_> {}
@@ -105,6 +104,9 @@ impl<'a> Executor<'a> {
     /// });
     /// ```
     pub fn spawn<T: Send + 'a>(&self, future: impl Future<Output = T> + Send + 'a) -> Task<T> {
+        // Safety:
+        // - `future` must be `Send`.
+        // - `Executor::drop()` must call `Scheduler::destroy()`.
         unsafe { self.sched().spawn_unchecked(future) }
     }
 
@@ -126,10 +128,10 @@ impl<'a> Executor<'a> {
     /// assert!(ex.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
-        self.sched().ticker().try_tick()
+        self.sched().try_tick()
     }
 
-    /// Run a single task.
+    /// Runs a single task.
     ///
     /// Running a task means simply polling its future once.
     ///
@@ -149,7 +151,7 @@ impl<'a> Executor<'a> {
     /// future::block_on(ex.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
-        self.sched().ticker().tick().await;
+        self.sched().tick().await;
     }
 
     /// Runs the executor until the given future completes.
@@ -168,19 +170,7 @@ impl<'a> Executor<'a> {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        // A future that runs tasks forever.
-        let run_forever = async {
-            let mut ticker = self.sched().ticker();
-            loop {
-                for _ in 0..200 {
-                    ticker.tick().await;
-                }
-                future::yield_now().await;
-            }
-        };
-
-        // Run `future` and `run_forever` concurrently until `future` completes.
-        future.or(run_forever).await
+        self.sched().run(future).await
     }
 
     /// Returns a reference to the inner scheduler.
@@ -221,11 +211,11 @@ impl<'a> Default for Executor<'a> {
 /// ```
 #[derive(Debug)]
 pub struct LocalExecutor<'a> {
-    /// The inner executor.
-    inner: once_cell::unsync::OnceCell<Executor<'a>>,
+    /// The inner scheduler.
+    sched: once_cell::unsync::OnceCell<Arc<Scheduler>>,
 
-    /// Makes the type `!Send` and `!Sync`.
-    _marker: PhantomData<Rc<()>>,
+    /// Makes the `'a` lifetime invariant and the type be `!Send` and `!Sync`.
+    _marker: PhantomData<(UnsafeCell<&'a ()>, Rc<()>)>,
 }
 
 impl UnwindSafe for LocalExecutor<'_> {}
@@ -243,7 +233,7 @@ impl<'a> LocalExecutor<'a> {
     /// ```
     pub const fn new() -> LocalExecutor<'a> {
         LocalExecutor {
-            inner: once_cell::unsync::OnceCell::new(),
+            sched: once_cell::unsync::OnceCell::new(),
             _marker: PhantomData,
         }
     }
@@ -262,7 +252,10 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
-        unsafe { self.inner().sched().spawn_unchecked(future) }
+        // Safety:
+        // - `future` must only be polled and dropped on this thread.
+        // - `LocalExecutor::drop()` must call `Scheduler::destroy()`.
+        unsafe { self.sched().spawn_unchecked(future) }
     }
 
     /// Attempts to run a task if at least one is scheduled.
@@ -283,10 +276,10 @@ impl<'a> LocalExecutor<'a> {
     /// assert!(ex.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
-        self.inner().try_tick()
+        self.sched().try_tick()
     }
 
-    /// Run a single task.
+    /// Runs a single task.
     ///
     /// Running a task means simply polling its future once.
     ///
@@ -306,7 +299,7 @@ impl<'a> LocalExecutor<'a> {
     /// future::block_on(ex.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
-        self.inner().tick().await
+        self.sched().tick().await;
     }
 
     /// Runs the executor until the given future completes.
@@ -325,12 +318,20 @@ impl<'a> LocalExecutor<'a> {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        self.inner().run(future).await
+        self.sched().run(future).await
     }
 
-    /// Returns a reference to the inner executor.
-    fn inner(&self) -> &Executor<'a> {
-        self.inner.get_or_init(|| Executor::new())
+    /// Returns a reference to the inner scheduler.
+    fn sched(&self) -> &Arc<Scheduler> {
+        self.sched.get_or_init(|| Default::default())
+    }
+}
+
+impl Drop for LocalExecutor<'_> {
+    fn drop(&mut self) {
+        if let Some(sched) = self.sched.get() {
+            sched.destroy();
+        }
     }
 }
 

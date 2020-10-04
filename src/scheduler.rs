@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::task::{Poll, Waker};
 
 use async_task::Runnable;
-use futures_lite::{future, pin};
+use futures_lite::{future, pin, FutureExt};
 use parking_lot::{Mutex, MutexGuard};
 use vec_arena::Arena;
 
@@ -26,13 +26,11 @@ struct State {
     /// Currently active tasks.
     active: Arena<Waker>,
 
-    /// Number of sleeping tickers (both notified and unnotified).
-    sleeping: usize,
+    /// Total number of idle (sleeping or notified) tickers.
+    idle_count: usize,
 
-    /// IDs and wakers of sleeping unnotified tickers.
-    ///
-    /// A sleeping ticker is notified when its waker is missing from this list.
-    wakers: Vec<(u64, Waker)>,
+    /// IDs and wakers of sleeping tickers.
+    sleeping: Vec<(u64, Waker)>,
 
     /// ID generator.
     id_gen: u64,
@@ -44,7 +42,7 @@ impl Scheduler {
         self: &Arc<Scheduler>,
         future: impl Future<Output = T>,
     ) -> Task<T> {
-        // Remove the task from the set of active tasks when the future finishes.
+        // Keep the task's waker in the scheduler during its lifetime.
         let future = {
             let sched = self.clone();
             async move {
@@ -81,6 +79,53 @@ impl Scheduler {
         task
     }
 
+    /// Attempts to run a task if at least one is scheduled.
+    pub(crate) fn try_tick(&self) -> bool {
+        let mut state = self.state.lock();
+
+        match state.queue.pop_front() {
+            None => false,
+            Some(runnable) => {
+                // Notify another ticker now to pick up where this ticker left off, just in case
+                // running the task takes a long time.
+                notify(state);
+
+                // Run the task.
+                runnable.run();
+                true
+            }
+        }
+    }
+
+    /// Runs a single task.
+    pub(crate) async fn tick(&self) {
+        let mut ticker = Ticker {
+            sched: self,
+            idle: None,
+        };
+        ticker.tick().await;
+    }
+
+    /// Runs until the given future completes.
+    pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
+        // A future that runs tasks forever.
+        let run_forever = async {
+            let mut ticker = Ticker {
+                sched: self,
+                idle: None,
+            };
+            loop {
+                for _ in 0..200 {
+                    ticker.tick().await;
+                }
+                future::yield_now().await;
+            }
+        };
+
+        // Run `future` and `run_forever` concurrently until `future` completes.
+        future.or(run_forever).await
+    }
+
     /// Drops all unfinished tasks.
     pub(crate) fn destroy(self: &Arc<Scheduler>) {
         // Collect wakers of unfinished tasks.
@@ -102,21 +147,13 @@ impl Scheduler {
         // Drop unfinished tasks.
         mem::take(&mut self.state.lock().queue);
     }
-
-    /// Creates a ticker.
-    pub(crate) fn ticker(self: &Scheduler) -> Ticker<'_> {
-        Ticker {
-            sched: self,
-            sleeping: None,
-        }
-    }
 }
 
 /// Notifies a sleeping ticker.
 #[inline]
 fn notify(mut state: MutexGuard<'_, State>) {
-    let waker = if state.wakers.len() == state.sleeping {
-        state.wakers.pop().map(|item| item.1)
+    let waker = if state.sleeping.len() == state.idle_count {
+        state.sleeping.pop().map(|item| item.1)
     } else {
         None
     };
@@ -130,63 +167,40 @@ fn notify(mut state: MutexGuard<'_, State>) {
 
 /// Runs tasks one by one.
 #[derive(Debug)]
-pub(crate) struct Ticker<'a> {
+struct Ticker<'a> {
     /// The scheduler.
     sched: &'a Scheduler,
 
-    /// Sleeper ID and index in the wakers list when in sleeping state.
-    ///
-    /// States a ticker can be in:
-    /// 1) Woken.
-    /// 2a) Sleeping and unnotified.
-    /// 2b) Sleeping and notified.
-    sleeping: Option<(u64, usize)>,
+    /// When in idle state, holds the ID and index in the sleeping tickers list.
+    idle: Option<(u64, usize)>,
 }
 
 impl Ticker<'_> {
-    /// Attempts to run a task if at least one is scheduled.
-    pub(crate) fn try_tick(&self) -> bool {
-        let mut state = self.sched.state.lock();
-
-        match state.queue.pop_front() {
-            None => false,
-            Some(runnable) => {
-                // Notify another ticker now to pick up where this ticker left off, just in case
-                // running the task takes a long time.
-                notify(state);
-
-                // Run the task.
-                runnable.run();
-                true
-            }
-        }
-    }
-
     /// Waits for the next runnable task to run.
-    pub(crate) async fn tick(&mut self) {
+    async fn tick(&mut self) {
         let runnable = future::poll_fn(|cx| {
             let mut state = self.sched.state.lock();
 
             match state.queue.pop_front() {
                 None => {
-                    // Move to sleeping and unnotified state.
-                    match self.sleeping {
+                    // TODO: Spinning optimization:
+                    // 1. increment nmspinning
+                    // 2. cx.waker().wake_by_ref()
+                    // 3. return Poll::Pending
+
+                    // Transition to idle (sleeping) state.
+                    match self.idle {
                         None => {
+                            // Generate an ID unique to this state transition.
                             let id = state.id_gen;
                             state.id_gen += 1;
 
-                            self.sleeping = Some((id, state.wakers.len()));
-                            state.sleeping += 1;
-
-                            if state.sleeping > state.wakers.len() {
-                                state.wakers.push((id, cx.waker().clone()));
-                            } else {
-                                drop(state);
-                                cx.waker().wake_by_ref();
-                            }
+                            self.idle = Some((id, state.sleeping.len()));
+                            state.sleeping.push((id, cx.waker().clone()));
+                            state.idle_count += 1;
                         }
                         Some((id, index)) => {
-                            if let Some((w_id, w)) = state.wakers.get_mut(index) {
+                            if let Some((w_id, w)) = state.sleeping.get_mut(index) {
                                 if *w_id == id {
                                     if !w.will_wake(cx.waker()) {
                                         *w = cx.waker().clone();
@@ -195,27 +209,27 @@ impl Ticker<'_> {
                                 }
                             }
 
-                            self.sleeping = Some((id, state.wakers.len()));
-                            state.wakers.push((id, cx.waker().clone()));
+                            self.idle = Some((id, state.sleeping.len()));
+                            state.sleeping.push((id, cx.waker().clone()));
                         }
                     }
 
                     Poll::Pending
                 }
                 Some(r) => {
-                    // Wake up.
-                    if let Some((id, index)) = self.sleeping.take() {
-                        state.sleeping -= 1;
+                    // Transition to running state.
+                    if let Some((id, index)) = self.idle.take() {
+                        state.idle_count -= 1;
 
-                        if let Some((w_id, _)) = state.wakers.get(index) {
+                        if let Some((w_id, _)) = state.sleeping.get(index) {
                             if *w_id == id {
-                                state.wakers.remove(index);
+                                state.sleeping.remove(index);
                             }
                         }
                     }
 
-                    // Notify another ticker now to pick up where this ticker left off, just in case
-                    // running the task takes a long time.
+                    // Notify another ticker now to pick up where this ticker left off, just in
+                    // case running the task takes a long time.
                     notify(state);
 
                     Poll::Ready(r)
@@ -231,18 +245,20 @@ impl Ticker<'_> {
 
 impl Drop for Ticker<'_> {
     fn drop(&mut self) {
-        // If this ticker is in sleeping state, it must be removed from the sleepers list.
-        if let Some((id, index)) = self.sleeping {
+        // If idle, decrement the idle count.
+        if let Some((id, index)) = self.idle {
             let mut state = self.sched.state.lock();
-            state.sleeping -= 1;
+            state.idle_count -= 1;
 
-            if let Some((w_id, _)) = state.wakers.get(index) {
+            // If sleeping, remove it from the sleeping list.
+            if let Some((w_id, _)) = state.sleeping.get(index) {
                 if *w_id == id {
-                    state.wakers.remove(index);
+                    state.sleeping.remove(index);
+                    return;
                 }
             }
 
-            // If this ticker was notified, then notify another ticker.
+            // If notified, pass the notification to another ticker.
             notify(state);
         }
     }
