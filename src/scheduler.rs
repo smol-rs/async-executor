@@ -195,13 +195,17 @@ impl Ticker<'_> {
                             let id = state.id_gen;
                             state.id_gen += 1;
 
+                            // Become idle (sleeping).
                             self.idle = Some((id, state.sleeping.len()));
                             state.sleeping.push((id, cx.waker().clone()));
                             state.idle_count += 1;
+
+                            Poll::Pending
                         }
                         Some((id, index)) => {
                             if let Some((w_id, w)) = state.sleeping.get_mut(index) {
                                 if *w_id == id {
+                                    // If already sleeping, just update the waker.
                                     if !w.will_wake(cx.waker()) {
                                         *w = cx.waker().clone();
                                     }
@@ -209,18 +213,20 @@ impl Ticker<'_> {
                                 }
                             }
 
+                            // If notified, become sleeping.
                             self.idle = Some((id, state.sleeping.len()));
                             state.sleeping.push((id, cx.waker().clone()));
+
+                            Poll::Pending
                         }
                     }
-
-                    Poll::Pending
                 }
                 Some(r) => {
                     // Transition to running state.
                     if let Some((id, index)) = self.idle.take() {
                         state.idle_count -= 1;
 
+                        // If sleeping, remove from the sleeping list.
                         if let Some((w_id, _)) = state.sleeping.get(index) {
                             if *w_id == id {
                                 state.sleeping.remove(index);
@@ -250,7 +256,7 @@ impl Drop for Ticker<'_> {
             let mut state = self.sched.state.lock();
             state.idle_count -= 1;
 
-            // If sleeping, remove it from the sleeping list.
+            // If sleeping, remove from the sleeping list.
             if let Some((w_id, _)) = state.sleeping.get(index) {
                 if *w_id == id {
                     state.sleeping.remove(index);
