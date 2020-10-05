@@ -38,6 +38,10 @@ struct State {
 
 impl Scheduler {
     /// Spawns a task onto the scheduler.
+    ///
+    /// Safety:
+    /// - `future` must be `Send` if another thread may poll or drop it.
+    /// - `future` must be `'static` or `Scheduler::destroy()` must be called before it expires.
     pub(crate) unsafe fn spawn_unchecked<T>(
         self: &Arc<Scheduler>,
         future: impl Future<Output = T>,
