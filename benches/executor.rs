@@ -2,8 +2,10 @@
 
 extern crate test;
 
+use std::future::Future;
+
 use async_executor::Executor;
-use futures_lite::*;
+use futures_lite::future::{self, FutureExt};
 
 const TASKS: usize = 300;
 const STEPS: usize = 300;
