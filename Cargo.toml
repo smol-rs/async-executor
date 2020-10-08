@@ -22,5 +22,6 @@ vec-arena = "1.0.0"
 
 [dev-dependencies]
 async-channel = "1.4.1"
-async-io = "0.2.0"
+async-io = "1.1.9"
 easy-parallel = "3.1.0"
+num_cpus = "1.13.0"
