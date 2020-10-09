@@ -30,7 +30,7 @@ use std::task::{Poll, Waker};
 
 use async_task::Runnable;
 use concurrent_queue::ConcurrentQueue;
-use futures_lite::{future, FutureExt};
+use futures_lite::{future, prelude::*};
 use vec_arena::Arena;
 
 #[doc(no_inline)]

@@ -4,7 +4,7 @@ use std::future::Future;
 use std::thread;
 
 use async_executor::{Executor, Task};
-use futures_lite::{future, FutureExt};
+use futures_lite::{future, prelude::*};
 
 /// Task priority.
 #[repr(usize)]
