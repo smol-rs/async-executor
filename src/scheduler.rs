@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::task::{Poll, Waker};
 
 use async_task::Runnable;
-use futures_lite::{future, pin, FutureExt};
+use futures_lite::{future, pin, prelude::*};
 use parking_lot::{Mutex, MutexGuard};
 use vec_arena::Arena;
 
