@@ -214,6 +214,11 @@ impl<'a> Executor<'a> {
         future.or(run_forever).await
     }
 
+    /// Checks if the executor is empty and has no pending tasks to run.
+    pub fn is_empty(&self) -> bool {
+        self.state().active.lock().unwrap().is_empty()
+    }
+
     /// Returns a function that schedules a runnable task when it gets woken up.
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
         let state = self.state().clone();
@@ -391,6 +396,11 @@ impl<'a> LocalExecutor<'a> {
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         self.inner().run(future).await
+    }
+
+    /// Checks if the executor is empty and has no pending tasks to run.
+    pub fn is_empty(&self) -> bool {
+        self.inner().is_empty()
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
