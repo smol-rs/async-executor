@@ -1,3 +1,7 @@
+# Version 1.4.0
+
+- Add `Executor::is_empty()` and `LocalExecutor::is_empty()`.
+
 # Version 1.3.0
 
 - Parametrize executors over a lifetime to allow spawning non-`static` futures.
