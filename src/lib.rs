@@ -92,6 +92,28 @@ impl<'a> Executor<'a> {
         }
     }
 
+    /// Returns `true` if there are no unfinished tasks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    ///
+    /// let ex = Executor::new();
+    /// assert!(ex.is_empty());
+    ///
+    /// let task = ex.spawn(async {
+    ///     println!("Hello world");
+    /// });
+    /// assert!(!ex.is_empty());
+    ///
+    /// assert!(ex.try_tick());
+    /// assert!(ex.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.state().active.lock().unwrap().is_empty()
+    }
+
     /// Spawns a task onto the executor.
     ///
     /// # Examples
@@ -156,7 +178,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// Run a single task.
+    /// Runs a single task.
     ///
     /// Running a task means simply polling its future once.
     ///
@@ -212,11 +234,6 @@ impl<'a> Executor<'a> {
 
         // Run `future` and `run_forever` concurrently until `future` completes.
         future.or(run_forever).await
-    }
-
-    /// Checks if the executor is empty and has no pending tasks to run.
-    pub fn is_empty(&self) -> bool {
-        self.state().active.lock().unwrap().is_empty()
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
@@ -303,6 +320,28 @@ impl<'a> LocalExecutor<'a> {
         }
     }
 
+    /// Returns `true` if there are no unfinished tasks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::LocalExecutor;
+    ///
+    /// let local_ex = LocalExecutor::new();
+    /// assert!(local_ex.is_empty());
+    ///
+    /// let task = local_ex.spawn(async {
+    ///     println!("Hello world");
+    /// });
+    /// assert!(!local_ex.is_empty());
+    ///
+    /// assert!(local_ex.try_tick());
+    /// assert!(local_ex.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.inner().is_empty()
+    }
+
     /// Spawns a task onto the executor.
     ///
     /// # Examples
@@ -356,7 +395,7 @@ impl<'a> LocalExecutor<'a> {
         self.inner().try_tick()
     }
 
-    /// Run a single task.
+    /// Runs a single task.
     ///
     /// Running a task means simply polling its future once.
     ///
@@ -396,11 +435,6 @@ impl<'a> LocalExecutor<'a> {
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         self.inner().run(future).await
-    }
-
-    /// Checks if the executor is empty and has no pending tasks to run.
-    pub fn is_empty(&self) -> bool {
-        self.inner().is_empty()
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
