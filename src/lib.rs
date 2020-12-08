@@ -14,7 +14,7 @@
 //!     println!("Hello world");
 //! });
 //!
-//! // Run the executor until the task complets.
+//! // Run the executor until the task completes.
 //! future::block_on(ex.run(task));
 //! ```
 
