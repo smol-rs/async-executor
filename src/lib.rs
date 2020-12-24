@@ -497,9 +497,10 @@ impl State {
     /// Notifies a sleeping ticker.
     #[inline]
     fn notify(&self) {
-        if !self
+        if self
             .notified
-            .compare_and_swap(false, true, Ordering::SeqCst)
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
         {
             let waker = self.sleepers.lock().unwrap().notify();
             if let Some(w) = waker {
