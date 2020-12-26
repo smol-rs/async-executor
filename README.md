@@ -1,9 +1,9 @@
 # async-executor
 
-[![Build](https://github.com/stjepang/async-executor/workflows/Build%20and%20test/badge.svg)](
-https://github.com/stjepang/async-executor/actions)
+[![Build](https://github.com/smol-rs/async-executor/workflows/Build%20and%20test/badge.svg)](
+https://github.com/smol-rs/async-executor/actions)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](
-https://github.com/stjepang/async-executor)
+https://github.com/smol-rs/async-executor)
 [![Cargo](https://img.shields.io/crates/v/async-executor.svg)](
 https://crates.io/crates/async-executor)
 [![Documentation](https://docs.rs/async-executor/badge.svg)](
