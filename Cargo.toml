@@ -10,7 +10,6 @@ homepage = "https://github.com/smol-rs/async-executor"
 documentation = "https://docs.rs/async-executor"
 keywords = ["asynchronous", "executor", "single", "multi", "spawn"]
 categories = ["asynchronous", "concurrency"]
-readme = "README.md"
 
 [dependencies]
 async-task = "4.0.0"
