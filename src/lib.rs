@@ -198,7 +198,7 @@ impl<'a> Executor<'a> {
     /// future::block_on(ex.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
-        let state = self.state();
+        let state = self.state().clone();
         let runnable = Ticker::new(state).runnable().await;
         runnable.run();
     }
@@ -219,7 +219,7 @@ impl<'a> Executor<'a> {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        let runner = Runner::new(self.state());
+        let runner = Runner::new(self.state().clone());
 
         // A future that runs tasks forever.
         let run_forever = async {
@@ -449,7 +449,7 @@ impl<'a> LocalExecutor<'a> {
 
     /// Returns a reference to the inner executor.
     fn inner(&self) -> &Executor<'a> {
-        self.inner.get_or_init(|| Executor::new())
+        self.inner.get_or_init(Executor::new)
     }
 }
 
@@ -589,9 +589,9 @@ impl Sleepers {
 
 /// Runs task one by one.
 #[derive(Debug)]
-struct Ticker<'a> {
+struct Ticker {
     /// The executor state.
-    state: &'a State,
+    state: Arc<State>,
 
     /// Set to a non-zero sleeper ID when in sleeping state.
     ///
@@ -602,9 +602,9 @@ struct Ticker<'a> {
     sleeping: AtomicUsize,
 }
 
-impl Ticker<'_> {
+impl Ticker {
     /// Creates a ticker.
-    fn new(state: &State) -> Ticker<'_> {
+    fn new(state: Arc<State>) -> Ticker {
         Ticker {
             state,
             sleeping: AtomicUsize::new(0),
@@ -685,7 +685,7 @@ impl Ticker<'_> {
     }
 }
 
-impl Drop for Ticker<'_> {
+impl Drop for Ticker {
     fn drop(&mut self) {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         let id = self.sleeping.swap(0, Ordering::SeqCst);
@@ -710,12 +710,12 @@ impl Drop for Ticker<'_> {
 ///
 /// This is just a ticker that also has an associated local queue for improved cache locality.
 #[derive(Debug)]
-struct Runner<'a> {
+struct Runner {
     /// The executor state.
-    state: &'a State,
+    state: Arc<State>,
 
     /// Inner ticker.
-    ticker: Ticker<'a>,
+    ticker: Ticker,
 
     /// The local queue.
     local: Arc<ConcurrentQueue<Runnable>>,
@@ -724,12 +724,12 @@ struct Runner<'a> {
     ticks: AtomicUsize,
 }
 
-impl Runner<'_> {
+impl Runner {
     /// Creates a runner and registers it in the executor state.
-    fn new(state: &State) -> Runner<'_> {
+    fn new(state: Arc<State>) -> Runner {
         let runner = Runner {
-            state,
-            ticker: Ticker::new(state),
+            state: state.clone(),
+            ticker: Ticker::new(state.clone()),
             local: Arc::new(ConcurrentQueue::bounded(512)),
             ticks: AtomicUsize::new(0),
         };
@@ -796,7 +796,7 @@ impl Runner<'_> {
     }
 }
 
-impl Drop for Runner<'_> {
+impl Drop for Runner {
     fn drop(&mut self) {
         // Remove the local queue.
         self.state
