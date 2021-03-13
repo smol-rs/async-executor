@@ -255,13 +255,13 @@ impl<'a> Executor<'a> {
         let runner = Runner::new(self.state().clone());
         let _prevent_sharing = RefCell::new(0);
         runner.set_tls_active();
-        eprintln!("run_pinned started!");
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
                 for _ in 0..200 {
                     let runnable = runner.runnable().await;
                     runnable.run();
+                    // clear_tls()
                 }
             }
         };
@@ -593,17 +593,17 @@ impl Sleepers {
     /// Removes a previously inserted sleeping ticker.
     ///
     /// Returns `true` if the ticker was notified.
-    fn remove(&mut self, id: usize) -> bool {
+    fn remove(&mut self, id: usize) -> Option<Waker> {
         self.count -= 1;
         self.free_ids.push(id);
 
         for i in (0..self.wakers.len()).rev() {
             if self.wakers[i].0 == id {
-                self.wakers.remove(i);
-                return false;
+                let (_, waker) = self.wakers.remove(i);
+                return Some(waker);
             }
         }
-        true
+        None
     }
 
     /// Returns `true` if a sleeping ticker is notified or no tickers are sleeping.
@@ -675,15 +675,18 @@ impl Ticker {
     }
 
     /// Moves the ticker into woken state.
-    fn wake(&self) {
+    fn wake(&self) -> Option<Waker> {
         let id = self.sleeping.swap(0, Ordering::SeqCst);
         if id != 0 {
             let mut sleepers = self.state.sleepers.lock().unwrap();
-            sleepers.remove(id);
+            let toret = sleepers.remove(id);
 
             self.state
                 .notified
                 .swap(sleepers.is_notified(), Ordering::SeqCst);
+            toret
+        } else {
+            None
         }
     }
 
@@ -727,7 +730,7 @@ impl Drop for Ticker {
         let id = self.sleeping.swap(0, Ordering::SeqCst);
         if id != 0 {
             let mut sleepers = self.state.sleepers.lock().unwrap();
-            let notified = sleepers.remove(id);
+            let notified = sleepers.remove(id).is_none();
 
             self.state
                 .notified
@@ -755,13 +758,19 @@ fn try_push_tls(runnable: Runnable) -> Result<(), Runnable> {
             }
             // notify ticker
             // eprintln!("successfully pushed locally");
-            ticker.wake();
+            if let Some(v) = ticker.wake() {
+                v.wake()
+            }
             Ok(())
         } else {
             // eprintln!("WARNING! CANNOT PUSH TO TLS");
             Err(runnable)
         }
     })
+}
+
+fn clear_tls() {
+    TLS.with(|v| *v.borrow_mut() = Default::default())
 }
 
 /// A worker in a work-stealing executor.
@@ -788,7 +797,7 @@ impl Runner {
         let runner = Runner {
             state: state.clone(),
             ticker: Arc::new(Ticker::new(state.clone())),
-            local: Arc::new(ConcurrentQueue::unbounded()),
+            local: Arc::new(ConcurrentQueue::bounded(512)),
             ticks: AtomicUsize::new(0),
         };
         state

@@ -16,7 +16,9 @@ static EX: Executor<'_> = Executor::new();
 fn run(f: impl FnOnce()) {
     let (s, r) = async_channel::bounded::<()>(1);
     easy_parallel::Parallel::new()
-        .each(0..num_cpus::get(), |_| EX.run_pinned(r.recv()))
+        .each(0..num_cpus::get(), |_| {
+            future::block_on(EX.run_pinned(r.recv()))
+        })
         .finish(move || {
             let _s = s;
             f()
