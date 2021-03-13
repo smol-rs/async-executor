@@ -251,8 +251,9 @@ impl<'a> Executor<'a> {
     ///
     /// assert_eq!(res, 6);
     /// ```
-    pub fn run_pinned<T>(&self, future: impl Future<Output = T>) -> T {
+    pub async fn run_pinned<T>(&self, future: impl Future<Output = T>) -> T {
         let runner = Runner::new(self.state().clone());
+        let _prevent_sharing = RefCell::new(0);
         runner.set_tls_active();
         eprintln!("run_pinned started!");
         // A future that runs tasks forever.
@@ -266,7 +267,7 @@ impl<'a> Executor<'a> {
         };
 
         // Run `future` and `run_forever` concurrently until `future` completes.
-        future::block_on(future.or(run_forever))
+        future.or(run_forever).await
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
