@@ -20,13 +20,13 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use std::future::Future;
-use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Poll, Waker};
+use std::{cell::RefCell, future::Future};
+use std::{marker::PhantomData, sync::Weak};
 
 use async_task::Runnable;
 use concurrent_queue::ConcurrentQueue;
@@ -220,7 +220,7 @@ impl<'a> Executor<'a> {
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         let runner = Runner::new(self.state().clone());
-
+        // runner.set_tls_active();
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
@@ -236,14 +236,49 @@ impl<'a> Executor<'a> {
         future.or(run_forever).await
     }
 
+    /// Runs the executor until the given future completes, occupying a whole thread. This may lead to better performance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    /// use futures_lite::future;
+    ///
+    /// let ex = Executor::new();
+    ///
+    /// let task = ex.spawn(async { 1 + 2 });
+    /// let res = future::block_on(ex.run(async { task.await * 2 }));
+    ///
+    /// assert_eq!(res, 6);
+    /// ```
+    pub fn run_pinned<T>(&self, future: impl Future<Output = T>) -> T {
+        let runner = Runner::new(self.state().clone());
+        runner.set_tls_active();
+        eprintln!("run_pinned started!");
+        // A future that runs tasks forever.
+        let run_forever = async {
+            loop {
+                for _ in 0..200 {
+                    let runnable = runner.runnable().await;
+                    runnable.run();
+                }
+            }
+        };
+
+        // Run `future` and `run_forever` concurrently until `future` completes.
+        future::block_on(future.or(run_forever))
+    }
+
     /// Returns a function that schedules a runnable task when it gets woken up.
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
         let state = self.state().clone();
 
         // TODO(stjepang): If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            state.queue.push(runnable).unwrap();
-            state.notify();
+            if let Err(runnable) = try_push_tls(runnable) {
+                state.queue.push(runnable).unwrap();
+                state.notify();
+            }
         }
     }
 
@@ -706,6 +741,28 @@ impl Drop for Ticker {
     }
 }
 
+thread_local! {
+    static TLS: RefCell<(Weak<Ticker>, Weak<ConcurrentQueue<Runnable>>)> = RefCell::new((Weak::new(), Weak::new()))
+}
+
+fn try_push_tls(runnable: Runnable) -> Result<(), Runnable> {
+    TLS.with(|tls| {
+        let tls = tls.borrow();
+        if let (Some(ticker), Some(queue)) = (tls.0.upgrade(), tls.1.upgrade()) {
+            if let Err(err) = queue.push(runnable) {
+                return Err(err.into_inner());
+            }
+            // notify ticker
+            // eprintln!("successfully pushed locally");
+            ticker.wake();
+            Ok(())
+        } else {
+            // eprintln!("WARNING! CANNOT PUSH TO TLS");
+            Err(runnable)
+        }
+    })
+}
+
 /// A worker in a work-stealing executor.
 ///
 /// This is just a ticker that also has an associated local queue for improved cache locality.
@@ -715,7 +772,7 @@ struct Runner {
     state: Arc<State>,
 
     /// Inner ticker.
-    ticker: Ticker,
+    ticker: Arc<Ticker>,
 
     /// The local queue.
     local: Arc<ConcurrentQueue<Runnable>>,
@@ -729,8 +786,8 @@ impl Runner {
     fn new(state: Arc<State>) -> Runner {
         let runner = Runner {
             state: state.clone(),
-            ticker: Ticker::new(state.clone()),
-            local: Arc::new(ConcurrentQueue::bounded(512)),
+            ticker: Arc::new(Ticker::new(state.clone())),
+            local: Arc::new(ConcurrentQueue::unbounded()),
             ticks: AtomicUsize::new(0),
         };
         state
@@ -739,6 +796,13 @@ impl Runner {
             .unwrap()
             .push(runner.local.clone());
         runner
+    }
+
+    /// Sets as active in the TLS
+    fn set_tls_active(&self) {
+        let weak_ticker = Arc::downgrade(&self.ticker);
+        let weak_local = Arc::downgrade(&self.local);
+        TLS.with(|tls| *tls.borrow_mut() = (weak_ticker, weak_local))
     }
 
     /// Waits for the next runnable task to run.
@@ -784,13 +848,13 @@ impl Runner {
             })
             .await;
 
-        // Bump the tick counter.
-        let ticks = self.ticks.fetch_add(1, Ordering::SeqCst);
+        // // Bump the tick counter.
+        // let ticks = self.ticks.fetch_add(1, Ordering::SeqCst);
 
-        if ticks % 64 == 0 {
-            // Steal tasks from the global queue to ensure fair task scheduling.
-            steal(&self.state.queue, &self.local);
-        }
+        // if ticks % 64 == 0 {
+        //     // Steal tasks from the global queue to ensure fair task scheduling.
+        //     steal(&self.state.queue, &self.local);
+        // }
 
         runnable
     }
