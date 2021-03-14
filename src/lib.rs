@@ -834,7 +834,7 @@ impl Runner {
 
                 // Try stealing from the global queue.
                 if let Some(r) = self.state.queue.pop() {
-                    // steal(&self.state.queue, &self.local);
+                    self.local.steal_from(&self.state.queue);
                     return Some(r);
                 }
 
@@ -855,7 +855,7 @@ impl Runner {
 
                 // Try stealing from each local queue in the list.
                 for local in iter {
-                    // steal(local, &self.local);
+                    self.local.steal_from(local);
                     if let Some(r) = self.local.pop() {
                         return Some(r);
                     }

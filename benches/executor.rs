@@ -4,7 +4,7 @@ extern crate test;
 
 use std::future::Future;
 
-use async_executor::Executor;
+use async_executor::{Executor, Task};
 use futures_lite::{future, prelude::*};
 
 const TASKS: usize = 300;
@@ -105,6 +105,62 @@ fn yield_now(b: &mut test::Bencher) {
                 for task in tasks {
                     task.await;
                 }
+            });
+        });
+    });
+}
+
+#[bench]
+fn context_switch(b: &mut test::Bencher) {
+    let (send, mut recv) = async_channel::bounded::<usize>(1);
+    let mut tasks = vec![];
+    for _ in 0..TASKS {
+        let old_recv = recv.clone();
+        let (new_send, new_recv) = async_channel::bounded(1);
+        tasks.push(EX.spawn(async move {
+            loop {
+                new_send.send(old_recv.recv().await.unwrap()).await.unwrap()
+            }
+        }));
+        recv = new_recv;
+    }
+    run(|| {
+        b.iter(move || {
+            future::block_on(async {
+                send.send(1).await.unwrap();
+                recv.recv().await.unwrap();
+            });
+        });
+    });
+}
+
+#[bench]
+fn context_switch_with_traffic(b: &mut test::Bencher) {
+    let (send, mut recv) = async_channel::bounded::<usize>(1);
+    let mut tasks: Vec<Task<Option<()>>> = vec![];
+    for num in 0..TASKS {
+        let old_recv = recv.clone();
+        let (new_send, new_recv) = async_channel::bounded(1);
+        tasks.push(EX.spawn(async move {
+            loop {
+                new_send.send(old_recv.recv().await.ok()?).await.ok()?;
+                eprintln!("propagate {}", num);
+            }
+        }));
+        recv = new_recv;
+    }
+    for _ in 0..1 {
+        tasks.push(EX.spawn(async move {
+            loop {
+                future::yield_now().await;
+            }
+        }))
+    }
+    run(|| {
+        b.iter(move || {
+            future::block_on(async {
+                send.send(1).await.unwrap();
+                recv.recv().await.unwrap();
             });
         });
     });
