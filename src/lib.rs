@@ -21,6 +21,7 @@
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 mod taskqueue;
+mod unsafe_queue;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -36,7 +37,7 @@ use std::{rc::Rc, sync::Mutex};
 use async_task::Runnable;
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
-use taskqueue::TaskQueue;
+use taskqueue::{GlobalQueue, LocalQueue};
 use vec_arena::Arena;
 
 #[doc(no_inline)]
@@ -226,7 +227,7 @@ impl<'a> Executor<'a> {
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         let runner = Runner::new(self.state().clone());
-        // runner.set_tls_active();
+        runner.set_tls_active();
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
@@ -235,40 +236,6 @@ impl<'a> Executor<'a> {
                     runnable.run();
                 }
                 future::yield_now().await;
-            }
-        };
-
-        // Run `future` and `run_forever` concurrently until `future` completes.
-        future.or(run_forever).await
-    }
-
-    /// Runs the executor until the given future completes, occupying a whole thread. This may lead to better performance.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use async_executor::Executor;
-    /// use futures_lite::future;
-    ///
-    /// let ex = Executor::new();
-    ///
-    /// let task = ex.spawn(async { 1 + 2 });
-    /// let res = future::block_on(ex.run(async { task.await * 2 }));
-    ///
-    /// assert_eq!(res, 6);
-    /// ```
-    pub async fn run_pinned<T>(&self, future: impl Future<Output = T>) -> T {
-        let runner = Runner::new(self.state().clone());
-        let _prevent_sharing = RefCell::new(0);
-        runner.set_tls_active();
-        // A future that runs tasks forever.
-        let run_forever = async {
-            loop {
-                for _ in 0..200 {
-                    let runnable = runner.runnable().await;
-                    runnable.run();
-                    // clear_tls()
-                }
             }
         };
 
@@ -505,10 +472,10 @@ impl<'a> Default for LocalExecutor<'a> {
 #[derive(Debug)]
 struct State {
     /// The global queue.
-    queue: TaskQueue,
+    queue: GlobalQueue,
 
     /// Local queues created by runners.
-    local_queues: RwLock<Vec<Arc<TaskQueue>>>,
+    local_queues: RwLock<Vec<Arc<LocalQueue>>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
@@ -524,7 +491,7 @@ impl State {
     /// Creates state for a new executor.
     fn new() -> State {
         State {
-            queue: TaskQueue::default(),
+            queue: GlobalQueue::default(),
             local_queues: RwLock::new(Vec::new()),
             notified: AtomicBool::new(true),
             sleepers: Mutex::new(Sleepers {
@@ -752,17 +719,20 @@ impl Drop for Ticker {
 }
 
 thread_local! {
-    static TLS: RefCell<(Weak<Ticker>, Weak<TaskQueue>)> = RefCell::new((Weak::new(), Weak::new()))
+    static TLS: RefCell<(Weak<Ticker>, Weak<LocalQueue>)> = RefCell::new((Weak::new(), Weak::new()))
 }
 
 fn try_push_tls(runnable: Runnable) -> Result<(), Runnable> {
+    // 1/1000 chance to spuriously fail, for fairness
+    if fastrand::usize(0..1000) == 0 {
+        return Err(runnable);
+    }
     TLS.with(|tls| {
         let tls = tls.borrow();
         if let (Some(ticker), Some(queue)) = (tls.0.upgrade(), tls.1.upgrade()) {
-            // if let Err(err) = queue.push(runnable) {
-            //     return Err(err.into_inner());
-            // }
-            queue.push(runnable);
+            if let Err(err) = unsafe { queue.push(runnable) } {
+                return Err(err);
+            }
             // notify ticker
             // eprintln!("successfully pushed locally");
             if let Some(v) = ticker.wake() {
@@ -792,7 +762,7 @@ struct Runner {
     ticker: Arc<Ticker>,
 
     /// The local queue.
-    local: Arc<TaskQueue>,
+    local: Arc<LocalQueue>,
 
     /// Bumped every time a runnable task is found.
     ticks: AtomicUsize,
@@ -804,7 +774,7 @@ impl Runner {
         let runner = Runner {
             state: state.clone(),
             ticker: Arc::new(Ticker::new(state.clone())),
-            local: Arc::new(TaskQueue::default()),
+            local: Arc::new(LocalQueue::default()),
             ticks: AtomicUsize::new(0),
         };
         state
@@ -828,13 +798,13 @@ impl Runner {
             .ticker
             .runnable_with(|| {
                 // Try the local queue.
-                if let Some(r) = self.local.pop() {
+                if let Some(r) = unsafe { self.local.pop() } {
                     return Some(r);
                 }
 
                 // Try stealing from the global queue.
                 if let Some(r) = self.state.queue.pop() {
-                    self.local.steal_from(&self.state.queue);
+                    self.local.steal_global(&self.state.queue);
                     return Some(r);
                 }
 
@@ -855,8 +825,8 @@ impl Runner {
 
                 // Try stealing from each local queue in the list.
                 for local in iter {
-                    self.local.steal_from(local);
-                    if let Some(r) = self.local.pop() {
+                    self.local.steal_local(local);
+                    if let Some(r) = unsafe { self.local.pop() } {
                         return Some(r);
                     }
                 }
@@ -866,12 +836,12 @@ impl Runner {
             .await;
 
         // // Bump the tick counter.
-        // let ticks = self.ticks.fetch_add(1, Ordering::SeqCst);
+        let ticks = self.ticks.fetch_add(1, Ordering::SeqCst);
 
-        // if ticks % 64 == 0 {
-        //     // Steal tasks from the global queue to ensure fair task scheduling.
-        //     steal(&self.state.queue, &self.local);
-        // }
+        if ticks % 64 == 0 {
+            // Steal tasks from the global queue to ensure fair task scheduling.
+            self.local.steal_global(&self.state.queue)
+        }
 
         runnable
     }
@@ -887,7 +857,7 @@ impl Drop for Runner {
             .retain(|local| !Arc::ptr_eq(local, &self.local));
 
         // Re-schedule remaining tasks in the local queue.
-        while let Some(r) = self.local.pop() {
+        while let Some(r) = unsafe { self.local.pop() } {
             r.schedule();
         }
     }

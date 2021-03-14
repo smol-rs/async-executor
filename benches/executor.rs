@@ -16,9 +16,7 @@ static EX: Executor<'_> = Executor::new();
 fn run(f: impl FnOnce()) {
     let (s, r) = async_channel::bounded::<()>(1);
     easy_parallel::Parallel::new()
-        .each(0..num_cpus::get(), |_| {
-            future::block_on(EX.run_pinned(r.recv()))
-        })
+        .each(0..num_cpus::get(), |_| future::block_on(EX.run(r.recv())))
         .finish(move || {
             let _s = s;
             f()
@@ -111,15 +109,15 @@ fn yield_now(b: &mut test::Bencher) {
 }
 
 #[bench]
-fn context_switch(b: &mut test::Bencher) {
+fn context_switch_quiet(b: &mut test::Bencher) {
     let (send, mut recv) = async_channel::bounded::<usize>(1);
-    let mut tasks = vec![];
+    let mut tasks: Vec<Task<Option<()>>> = vec![];
     for _ in 0..TASKS {
         let old_recv = recv.clone();
         let (new_send, new_recv) = async_channel::bounded(1);
         tasks.push(EX.spawn(async move {
             loop {
-                new_send.send(old_recv.recv().await.unwrap()).await.unwrap()
+                new_send.send(old_recv.recv().await.ok()?).await.ok()?
             }
         }));
         recv = new_recv;
@@ -135,22 +133,21 @@ fn context_switch(b: &mut test::Bencher) {
 }
 
 #[bench]
-fn context_switch_with_traffic(b: &mut test::Bencher) {
+fn context_switch_busy(b: &mut test::Bencher) {
     let (send, mut recv) = async_channel::bounded::<usize>(1);
-    let mut tasks = vec![];
+    let mut tasks: Vec<Task<Option<()>>> = vec![];
     for num in 0..TASKS {
         let old_recv = recv.clone();
         let (new_send, new_recv) = async_channel::bounded(1);
         tasks.push(EX.spawn(async move {
-            scopeguard::defer!(eprintln!("forwarder stopping..."));
             loop {
-                new_send.send(old_recv.recv().await.unwrap()).await.unwrap();
-                eprintln!("propagate {}", num);
+                // eprintln!("forward {}", num);
+                new_send.send(old_recv.recv().await.ok()?).await.ok()?;
             }
         }));
         recv = new_recv;
     }
-    for _ in 0..1 {
+    for _ in 0..TASKS {
         tasks.push(EX.spawn(async move {
             loop {
                 future::yield_now().await;
