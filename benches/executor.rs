@@ -137,13 +137,14 @@ fn context_switch(b: &mut test::Bencher) {
 #[bench]
 fn context_switch_with_traffic(b: &mut test::Bencher) {
     let (send, mut recv) = async_channel::bounded::<usize>(1);
-    let mut tasks: Vec<Task<Option<()>>> = vec![];
+    let mut tasks = vec![];
     for num in 0..TASKS {
         let old_recv = recv.clone();
         let (new_send, new_recv) = async_channel::bounded(1);
         tasks.push(EX.spawn(async move {
+            scopeguard::defer!(eprintln!("forwarder stopping..."));
             loop {
-                new_send.send(old_recv.recv().await.ok()?).await.ok()?;
+                new_send.send(old_recv.recv().await.unwrap()).await.unwrap();
                 eprintln!("propagate {}", num);
             }
         }));
