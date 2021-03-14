@@ -20,17 +20,23 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
-use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::rc::Rc;
+mod taskqueue;
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::task::{Poll, Waker};
 use std::{cell::RefCell, future::Future};
 use std::{marker::PhantomData, sync::Weak};
+use std::{
+    panic::{RefUnwindSafe, UnwindSafe},
+    sync::RwLock,
+};
+use std::{rc::Rc, sync::Mutex};
 
 use async_task::Runnable;
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
+use taskqueue::TaskQueue;
 use vec_arena::Arena;
 
 #[doc(no_inline)]
@@ -165,8 +171,8 @@ impl<'a> Executor<'a> {
     /// ```
     pub fn try_tick(&self) -> bool {
         match self.state().queue.pop() {
-            Err(_) => false,
-            Ok(runnable) => {
+            None => false,
+            Some(runnable) => {
                 // Notify another ticker now to pick up where this ticker left off, just in case
                 // running the task takes a long time.
                 self.state().notify();
@@ -274,10 +280,10 @@ impl<'a> Executor<'a> {
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
         let state = self.state().clone();
 
-        // TODO(stjepang): If possible, push into the current local queue and notify the ticker.
+        // Try to push to the local queue. If it doesn't work, push to the global queue.
         move |runnable| {
             if let Err(runnable) = try_push_tls(runnable) {
-                state.queue.push(runnable).unwrap();
+                state.queue.push(runnable);
                 state.notify();
             }
         }
@@ -300,7 +306,7 @@ impl Drop for Executor<'_> {
             }
             drop(active);
 
-            while state.queue.pop().is_ok() {}
+            while state.queue.pop().is_some() {}
         }
     }
 }
@@ -478,7 +484,7 @@ impl<'a> LocalExecutor<'a> {
         let state = self.inner().state().clone();
 
         move |runnable| {
-            state.queue.push(runnable).unwrap();
+            state.queue.push(runnable);
             state.notify();
         }
     }
@@ -499,10 +505,10 @@ impl<'a> Default for LocalExecutor<'a> {
 #[derive(Debug)]
 struct State {
     /// The global queue.
-    queue: ConcurrentQueue<Runnable>,
+    queue: TaskQueue,
 
     /// Local queues created by runners.
-    local_queues: RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>,
+    local_queues: RwLock<Vec<Arc<TaskQueue>>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
@@ -518,7 +524,7 @@ impl State {
     /// Creates state for a new executor.
     fn new() -> State {
         State {
-            queue: ConcurrentQueue::unbounded(),
+            queue: TaskQueue::default(),
             local_queues: RwLock::new(Vec::new()),
             notified: AtomicBool::new(true),
             sleepers: Mutex::new(Sleepers {
@@ -692,7 +698,7 @@ impl Ticker {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&self) -> Runnable {
-        self.runnable_with(|| self.state.queue.pop().ok()).await
+        self.runnable_with(|| self.state.queue.pop()).await
     }
 
     /// Waits for the next runnable task to run, given a function that searches for a task.
@@ -746,16 +752,17 @@ impl Drop for Ticker {
 }
 
 thread_local! {
-    static TLS: RefCell<(Weak<Ticker>, Weak<ConcurrentQueue<Runnable>>)> = RefCell::new((Weak::new(), Weak::new()))
+    static TLS: RefCell<(Weak<Ticker>, Weak<TaskQueue>)> = RefCell::new((Weak::new(), Weak::new()))
 }
 
 fn try_push_tls(runnable: Runnable) -> Result<(), Runnable> {
     TLS.with(|tls| {
         let tls = tls.borrow();
         if let (Some(ticker), Some(queue)) = (tls.0.upgrade(), tls.1.upgrade()) {
-            if let Err(err) = queue.push(runnable) {
-                return Err(err.into_inner());
-            }
+            // if let Err(err) = queue.push(runnable) {
+            //     return Err(err.into_inner());
+            // }
+            queue.push(runnable);
             // notify ticker
             // eprintln!("successfully pushed locally");
             if let Some(v) = ticker.wake() {
@@ -785,7 +792,7 @@ struct Runner {
     ticker: Arc<Ticker>,
 
     /// The local queue.
-    local: Arc<ConcurrentQueue<Runnable>>,
+    local: Arc<TaskQueue>,
 
     /// Bumped every time a runnable task is found.
     ticks: AtomicUsize,
@@ -797,7 +804,7 @@ impl Runner {
         let runner = Runner {
             state: state.clone(),
             ticker: Arc::new(Ticker::new(state.clone())),
-            local: Arc::new(ConcurrentQueue::bounded(512)),
+            local: Arc::new(TaskQueue::default()),
             ticks: AtomicUsize::new(0),
         };
         state
@@ -821,13 +828,13 @@ impl Runner {
             .ticker
             .runnable_with(|| {
                 // Try the local queue.
-                if let Ok(r) = self.local.pop() {
+                if let Some(r) = self.local.pop() {
                     return Some(r);
                 }
 
                 // Try stealing from the global queue.
-                if let Ok(r) = self.state.queue.pop() {
-                    steal(&self.state.queue, &self.local);
+                if let Some(r) = self.state.queue.pop() {
+                    // steal(&self.state.queue, &self.local);
                     return Some(r);
                 }
 
@@ -848,8 +855,8 @@ impl Runner {
 
                 // Try stealing from each local queue in the list.
                 for local in iter {
-                    steal(local, &self.local);
-                    if let Ok(r) = self.local.pop() {
+                    // steal(local, &self.local);
+                    if let Some(r) = self.local.pop() {
                         return Some(r);
                     }
                 }
@@ -880,7 +887,7 @@ impl Drop for Runner {
             .retain(|local| !Arc::ptr_eq(local, &self.local));
 
         // Re-schedule remaining tasks in the local queue.
-        while let Ok(r) = self.local.pop() {
+        while let Some(r) = self.local.pop() {
             r.schedule();
         }
     }
