@@ -23,11 +23,11 @@
 mod taskqueue;
 mod unsafe_queue;
 
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Poll, Waker};
 use std::{cell::RefCell, future::Future};
-use std::{marker::PhantomData, sync::Weak};
 use std::{
     panic::{RefUnwindSafe, UnwindSafe},
     sync::RwLock,
@@ -227,10 +227,11 @@ impl<'a> Executor<'a> {
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         let runner = Runner::new(self.state().clone());
+        runner.set_tls_active();
+        let _guard = CallOnDrop(clear_tls);
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
-                runner.set_tls_active();
                 for _ in 0..200 {
                     let runnable = runner.runnable().await;
                     runnable.run();
@@ -722,6 +723,10 @@ thread_local! {
     static TLS: RefCell<(Option<Arc<Ticker>>, Option<Arc<LocalQueue>>)> = Default::default()
 }
 
+fn clear_tls() {
+    TLS.with(|v| *v.borrow_mut() = Default::default())
+}
+
 fn try_push_tls(runnable: Runnable) -> Result<(), Runnable> {
     // 1/1000 chance to spuriously fail, for fairness
     if fastrand::usize(0..1000) == 0 {
@@ -785,7 +790,12 @@ impl Runner {
     fn set_tls_active(&self) {
         // let weak_ticker = Arc::downgrade(&self.ticker);
         // let weak_local = Arc::downgrade(&self.local);
-        TLS.with(|tls| *tls.borrow_mut() = (Some(self.ticker.clone()), Some(self.local.clone())))
+        TLS.with(|tls| {
+            let mut tls = tls.borrow_mut();
+            if tls.0.is_none() {
+                *tls = (Some(self.ticker.clone()), Some(self.local.clone()))
+            }
+        })
     }
 
     /// Waits for the next runnable task to run.
@@ -794,7 +804,7 @@ impl Runner {
             .ticker
             .runnable_with(|| {
                 // Try the local queue.
-                if let Some(r) = unsafe { self.local.pop() } {
+                if let Some(r) = self.local.pop() {
                     return Some(r);
                 }
 
@@ -822,7 +832,7 @@ impl Runner {
                 // Try stealing from each local queue in the list.
                 for local in iter {
                     self.local.steal_local(local);
-                    if let Some(r) = unsafe { self.local.pop() } {
+                    if let Some(r) = self.local.pop() {
                         return Some(r);
                     }
                 }
@@ -853,7 +863,7 @@ impl Drop for Runner {
             .retain(|local| !Arc::ptr_eq(local, &self.local));
 
         // Re-schedule remaining tasks in the local queue.
-        while let Some(r) = unsafe { self.local.pop() } {
+        while let Some(r) = self.local.pop() {
             r.schedule();
         }
     }
