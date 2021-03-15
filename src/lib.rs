@@ -227,10 +227,10 @@ impl<'a> Executor<'a> {
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         let runner = Runner::new(self.state().clone());
-        runner.set_tls_active();
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
+                runner.set_tls_active();
                 for _ in 0..200 {
                     let runnable = runner.runnable().await;
                     runnable.run();
@@ -744,10 +744,6 @@ fn try_push_tls(runnable: Runnable) -> Result<(), Runnable> {
             Err(runnable)
         }
     })
-}
-
-fn clear_tls() {
-    TLS.with(|v| *v.borrow_mut() = Default::default())
 }
 
 /// A worker in a work-stealing executor.
