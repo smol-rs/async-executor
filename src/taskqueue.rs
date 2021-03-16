@@ -49,7 +49,7 @@ impl LocalQueue {
     }
 
     pub fn steal_global(&self, other: &GlobalQueue) {
-        let mut count = (other.inner.len() + 1) / 2;
+        let mut count = (other.inner.len() + 1) / 8;
 
         if count > 0 {
             // Don't steal more than fits into the queue.
@@ -69,7 +69,7 @@ impl LocalQueue {
     }
 
     pub fn steal_local(&self, other: &LocalQueue) {
-        let mut count = (other.inner.len() + 1) / 2;
+        let mut count = (other.inner.len() + 1) / 8;
 
         if count > 0 {
             // Don't steal more than fits into the queue.

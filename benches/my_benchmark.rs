@@ -100,9 +100,30 @@ fn yield_now(b: &mut criterion::Bencher) {
     });
 }
 
-fn context_switch_quiet(b: &mut criterion::Bencher) {
+fn ping_pong(b: &mut criterion::Bencher) {
     const NUM_PINGS: usize = 1_000;
 
+    let (send, recv) = async_channel::bounded::<async_oneshot::Sender<_>>(10);
+    let _task: Task<Option<()>> = EX.spawn(async move {
+        loop {
+            let mut os = recv.recv().await.ok()?;
+            os.send(0u8).ok()?;
+        }
+    });
+    run(|| {
+        b.iter(move || {
+            future::block_on(async {
+                for i in 0..NUM_PINGS {
+                    let (os_send, os_recv) = async_oneshot::oneshot();
+                    send.send(os_send).await.unwrap();
+                    os_recv.await.unwrap();
+                }
+            });
+        });
+    });
+}
+
+fn context_switch_quiet(b: &mut criterion::Bencher) {
     let (send, mut recv) = async_channel::bounded::<usize>(1);
     let mut tasks: Vec<Task<Option<()>>> = vec![];
     for _ in 0..TASKS {
@@ -161,6 +182,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("spawn_one", spawn_one);
     c.bench_function("spawn_many", spawn_many);
     c.bench_function("yield_now", yield_now);
+    c.bench_function("ping_pong", ping_pong);
     c.bench_function("context_switch_quiet", context_switch_quiet);
     c.bench_function("context_switch_busy", context_switch_busy);
 }
