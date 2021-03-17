@@ -23,19 +23,15 @@
 mod taskqueue;
 mod unsafe_queue;
 
-use std::marker::PhantomData;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Poll, Waker};
 use std::{cell::RefCell, future::Future};
-use std::{
-    panic::{RefUnwindSafe, UnwindSafe},
-    sync::RwLock,
-};
+use std::{marker::PhantomData, sync::RwLock};
 use std::{rc::Rc, sync::Mutex};
 
 use async_task::Runnable;
-use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
 use taskqueue::{GlobalQueue, LocalQueue};
 use vec_arena::Arena;
@@ -800,6 +796,8 @@ impl Runner {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&self) -> Runnable {
+        static STEALING_COUNT: AtomicUsize = AtomicUsize::new(0);
+
         let runnable = self
             .ticker
             .runnable_with(|| {
@@ -812,6 +810,14 @@ impl Runner {
                 if let Some(r) = self.state.queue.pop() {
                     self.local.steal_global(&self.state.queue);
                     return Some(r);
+                }
+
+                let steal_count = STEALING_COUNT.fetch_add(1, Ordering::Relaxed);
+                let _guard = CallOnDrop(|| {
+                    STEALING_COUNT.fetch_sub(1, Ordering::Relaxed);
+                });
+                if steal_count > num_cpus::get_physical() / 2 {
+                    return None;
                 }
 
                 // Try stealing from other runners.
@@ -841,7 +847,7 @@ impl Runner {
             })
             .await;
 
-        // // Bump the tick counter.
+        // Bump the tick counter.
         let ticks = self.ticks.fetch_add(1, Ordering::SeqCst);
 
         if ticks % 64 == 0 {
@@ -868,29 +874,6 @@ impl Drop for Runner {
         }
     }
 }
-
-/// Steals some items from one queue into another.
-fn steal<T>(src: &ConcurrentQueue<T>, dest: &ConcurrentQueue<T>) {
-    // Half of `src`'s length rounded up.
-    let mut count = (src.len() + 1) / 2;
-
-    if count > 0 {
-        // Don't steal more than fits into the queue.
-        if let Some(cap) = dest.capacity() {
-            count = count.min(cap - dest.len());
-        }
-
-        // Steal tasks.
-        for _ in 0..count {
-            if let Ok(t) = src.pop() {
-                assert!(dest.push(t).is_ok());
-            } else {
-                break;
-            }
-        }
-    }
-}
-
 /// Runs a closure when dropped.
 struct CallOnDrop<F: Fn()>(F);
 

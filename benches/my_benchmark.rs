@@ -149,7 +149,7 @@ fn context_switch_quiet(b: &mut criterion::Bencher) {
 fn context_switch_busy(b: &mut criterion::Bencher) {
     let (send, mut recv) = async_channel::bounded::<usize>(1);
     let mut tasks: Vec<Task<Option<()>>> = vec![];
-    for num in 0..TASKS {
+    for num in 0..TASKS / 10 {
         let old_recv = recv.clone();
         let (new_send, new_recv) = async_channel::bounded(1);
         tasks.push(EX.spawn(async move {
@@ -170,8 +170,10 @@ fn context_switch_busy(b: &mut criterion::Bencher) {
     run(|| {
         b.iter(move || {
             future::block_on(async {
-                send.send(1).await.unwrap();
-                recv.recv().await.unwrap();
+                for _ in 0..10 {
+                    send.send(1).await.unwrap();
+                    recv.recv().await.unwrap();
+                }
             });
         });
     });
