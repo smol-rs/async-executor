@@ -244,9 +244,11 @@ impl<'a> Executor<'a> {
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
         let state = self.state().clone();
 
+        let task_id = fastrand::u64(0..u64::MAX);
         // Try to push to the local queue. If it doesn't work, push to the global queue.
         move |runnable| {
-            if let Err(runnable) = try_push_tls(runnable) {
+            // eprintln!("scheduling task {}", task_id);
+            if let Err(runnable) = try_push_tls(task_id, runnable) {
                 state.queue.push(runnable);
                 state.notify();
             }
@@ -446,6 +448,7 @@ impl<'a> LocalExecutor<'a> {
     /// Returns a function that schedules a runnable task when it gets woken up.
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
         let state = self.inner().state().clone();
+        let task_id = fastrand::usize(0..usize::MAX);
 
         move |runnable| {
             state.queue.push(runnable);
@@ -723,7 +726,7 @@ fn clear_tls() {
     TLS.with(|v| *v.borrow_mut() = Default::default())
 }
 
-fn try_push_tls(runnable: Runnable) -> Result<(), Runnable> {
+fn try_push_tls(task_id: u64, runnable: Runnable) -> Result<(), Runnable> {
     // 1/1000 chance to spuriously fail, for fairness
     if fastrand::usize(0..1000) == 0 {
         return Err(runnable);
@@ -731,7 +734,7 @@ fn try_push_tls(runnable: Runnable) -> Result<(), Runnable> {
     TLS.with(|tls| {
         let tls = tls.borrow();
         if let (Some(ticker), Some(queue)) = (&tls.0, &tls.1) {
-            if let Err(err) = queue.push(runnable) {
+            if let Err(err) = queue.push(task_id, runnable) {
                 return Err(err);
             }
             // notify ticker

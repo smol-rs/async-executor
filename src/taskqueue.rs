@@ -192,6 +192,7 @@ impl GlobalQueue {
 #[derive(Debug)]
 pub struct LocalQueue {
     inner: ConcurrentQueue<Runnable>,
+    last_pushed: UnsafeCell<u64>,
     next_task: UnsafeCell<Option<Runnable>>,
 }
 
@@ -202,18 +203,26 @@ impl Default for LocalQueue {
     fn default() -> Self {
         Self {
             inner: ConcurrentQueue::bounded(512),
+            last_pushed: Default::default(),
             next_task: Default::default(),
         }
     }
 }
 
 impl LocalQueue {
-    pub fn push(&self, task: Runnable) -> Result<(), Runnable> {
-        // let next_task = self.next_task();
-        // if let Some(old_task) = next_task.replace(task) {
-        // eprintln!("popping out!");
-        self.inner.push(task).map_err(|err| err.into_inner())?;
-        // }
+    pub fn push(&self, task_id: u64, task: Runnable) -> Result<(), Runnable> {
+        let last_pushed = unsafe { &mut *self.last_pushed.get() };
+        // if this is the same task as last time, we don't push to next_task
+        if task_id == *last_pushed {
+            self.inner.push(task).map_err(|err| err.into_inner())?;
+        } else {
+            let next_task = self.next_task();
+            if let Some(task) = next_task.replace(task) {
+                eprintln!("popping out!");
+                self.inner.push(task).map_err(|err| err.into_inner())?;
+            }
+        }
+        *last_pushed = task_id;
         Ok(())
     }
 
