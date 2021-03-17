@@ -218,7 +218,6 @@ impl LocalQueue {
         } else {
             let next_task = self.next_task();
             if let Some(task) = next_task.replace(task) {
-                eprintln!("popping out!");
                 self.inner.push(task).map_err(|err| err.into_inner())?;
             }
         }
