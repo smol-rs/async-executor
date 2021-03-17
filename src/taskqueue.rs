@@ -209,10 +209,11 @@ impl Default for LocalQueue {
 
 impl LocalQueue {
     pub fn push(&self, task: Runnable) -> Result<(), Runnable> {
-        let next_task = self.next_task();
-        if let Some(old_task) = next_task.replace(task) {
-            self.inner.push(old_task).map_err(|err| err.into_inner())?;
-        }
+        // let next_task = self.next_task();
+        // if let Some(old_task) = next_task.replace(task) {
+        // eprintln!("popping out!");
+        self.inner.push(task).map_err(|err| err.into_inner())?;
+        // }
         Ok(())
     }
 
