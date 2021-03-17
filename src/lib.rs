@@ -816,7 +816,8 @@ impl Runner {
                 let _guard = CallOnDrop(|| {
                     STEALING_COUNT.fetch_sub(1, Ordering::Relaxed);
                 });
-                if steal_count > num_cpus::get_physical() / 2 {
+                // limit steal contention on many-cpued systems
+                if steal_count > 4 {
                     return None;
                 }
 
