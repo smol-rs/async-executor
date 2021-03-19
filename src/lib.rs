@@ -21,8 +21,6 @@
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 mod taskqueue;
-mod unsafe_queue;
-
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -248,7 +246,7 @@ impl<'a> Executor<'a> {
         // Try to push to the local queue. If it doesn't work, push to the global queue.
         move |runnable| {
             // eprintln!("scheduling task {}", task_id);
-            if let Err(runnable) = try_push_tls(task_id, runnable) {
+            if let Err(runnable) = try_push_tls(&state, task_id, runnable) {
                 state.queue.push(runnable);
                 state.notify();
             }
@@ -481,7 +479,7 @@ struct State {
     notified: AtomicBool,
 
     /// A list of sleeping tickers.
-    sleepers: Mutex<Sleepers>,
+    sleepers: parking_lot::Mutex<Sleepers>,
 
     /// Currently active tasks.
     active: Mutex<Arena<Waker>>,
@@ -494,7 +492,7 @@ impl State {
             queue: GlobalQueue::default(),
             local_queues: RwLock::new(Vec::new()),
             notified: AtomicBool::new(true),
-            sleepers: Mutex::new(Sleepers {
+            sleepers: parking_lot::Mutex::new(Sleepers {
                 count: 0,
                 wakers: Vec::new(),
                 free_ids: Vec::new(),
@@ -511,7 +509,7 @@ impl State {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            let waker = self.sleepers.lock().unwrap().notify();
+            let waker = self.sleepers.lock().notify();
             if let Some(w) = waker {
                 w.wake();
             }
@@ -624,7 +622,7 @@ impl Ticker {
     ///
     /// Returns `false` if the ticker was already sleeping and unnotified.
     fn sleep(&self, waker: &Waker) -> bool {
-        let mut sleepers = self.state.sleepers.lock().unwrap();
+        let mut sleepers = self.state.sleepers.lock();
 
         match self.sleeping.load(Ordering::SeqCst) {
             // Move to sleeping state.
@@ -651,7 +649,7 @@ impl Ticker {
     fn wake(&self) -> Option<Waker> {
         let id = self.sleeping.swap(0, Ordering::SeqCst);
         if id != 0 {
-            let mut sleepers = self.state.sleepers.lock().unwrap();
+            let mut sleepers = self.state.sleepers.lock();
             let toret = sleepers.remove(id);
 
             self.state
@@ -702,7 +700,7 @@ impl Drop for Ticker {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         let id = self.sleeping.swap(0, Ordering::SeqCst);
         if id != 0 {
-            let mut sleepers = self.state.sleepers.lock().unwrap();
+            let mut sleepers = self.state.sleepers.lock();
             let notified = sleepers.remove(id).is_none();
 
             self.state
@@ -718,28 +716,33 @@ impl Drop for Ticker {
     }
 }
 
+struct TlsData {
+    state: Arc<State>,
+    ticker: Arc<Ticker>,
+    local_queue: Arc<LocalQueue>,
+}
+
 thread_local! {
-    static TLS: RefCell<(Option<Arc<Ticker>>, Option<Arc<LocalQueue>>)> = Default::default()
+    static TLS: RefCell<Option<TlsData>> = Default::default()
 }
 
 fn clear_tls() {
     TLS.with(|v| *v.borrow_mut() = Default::default())
 }
 
-fn try_push_tls(task_id: u64, runnable: Runnable) -> Result<(), Runnable> {
-    // 1/1000 chance to spuriously fail, for fairness
-    if fastrand::usize(0..1000) == 0 {
-        return Err(runnable);
-    }
+fn try_push_tls(state: &Arc<State>, task_id: u64, runnable: Runnable) -> Result<(), Runnable> {
     TLS.with(|tls| {
         let tls = tls.borrow();
-        if let (Some(ticker), Some(queue)) = (&tls.0, &tls.1) {
-            if let Err(err) = queue.push(task_id, runnable) {
+        if let Some(tlsdata) = tls.as_ref() {
+            if !Arc::ptr_eq(state, &tlsdata.state) {
+                return Err(runnable);
+            }
+            if let Err(err) = tlsdata.local_queue.push(task_id, runnable) {
                 return Err(err);
             }
             // notify ticker
             // eprintln!("successfully pushed locally");
-            if let Some(v) = ticker.wake() {
+            if let Some(v) = tlsdata.ticker.wake() {
                 v.wake()
             }
             Ok(())
@@ -791,15 +794,19 @@ impl Runner {
         // let weak_local = Arc::downgrade(&self.local);
         TLS.with(|tls| {
             let mut tls = tls.borrow_mut();
-            if tls.0.is_none() {
-                *tls = (Some(self.ticker.clone()), Some(self.local.clone()))
+            if tls.is_none() {
+                *tls = Some(TlsData {
+                    state: self.state.clone(),
+                    ticker: self.ticker.clone(),
+                    local_queue: self.local.clone(),
+                })
             }
         })
     }
 
     /// Waits for the next runnable task to run.
     async fn runnable(&self) -> Runnable {
-        static STEALING_COUNT: AtomicUsize = AtomicUsize::new(0);
+        // static STEALING_COUNT: AtomicUsize = AtomicUsize::new(0);
 
         let runnable = self
             .ticker
@@ -815,14 +822,14 @@ impl Runner {
                     return Some(r);
                 }
 
-                let steal_count = STEALING_COUNT.fetch_add(1, Ordering::Relaxed);
-                let _guard = CallOnDrop(|| {
-                    STEALING_COUNT.fetch_sub(1, Ordering::Relaxed);
-                });
-                // limit steal contention on many-cpued systems
-                if steal_count > 4 {
-                    return None;
-                }
+                // let steal_count = STEALING_COUNT.fetch_add(1, Ordering::Relaxed);
+                // let _guard = CallOnDrop(|| {
+                //     STEALING_COUNT.fetch_sub(1, Ordering::Relaxed);
+                // });
+                // // limit steal contention on many-cpued systems
+                // if steal_count > 4 {
+                //     return None;
+                // }
 
                 // Try stealing from other runners.
                 let local_queues = self.state.local_queues.read().unwrap();
@@ -852,7 +859,7 @@ impl Runner {
             .await;
 
         // Bump the tick counter.
-        let ticks = self.ticks.fetch_add(1, Ordering::SeqCst);
+        let ticks = self.ticks.fetch_add(1, Ordering::Relaxed);
 
         if ticks % 64 == 0 {
             // Steal tasks from the global queue to ensure fair task scheduling.

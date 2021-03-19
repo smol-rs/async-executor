@@ -34,7 +34,7 @@ criterion = "0.3"
 [profile.release]
 incremental = true
 debug = 2 # Set this to 1 or 2 to get more useful backtraces in debugger.
-lto = true
+lto = 'thin'
 codegen-units = 1
 
 [[bench]]
