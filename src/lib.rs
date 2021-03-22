@@ -31,7 +31,7 @@ use std::{rc::Rc, sync::Mutex};
 
 use async_task::Runnable;
 use futures_lite::{future, prelude::*};
-use taskqueue::{GlobalQueue, LocalQueue};
+use taskqueue::{GlobalQueue, LocalQueue, LocalQueueHandle};
 use vec_arena::Arena;
 
 #[doc(no_inline)]
@@ -446,8 +446,6 @@ impl<'a> LocalExecutor<'a> {
     /// Returns a function that schedules a runnable task when it gets woken up.
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
         let state = self.inner().state().clone();
-        let task_id = fastrand::usize(0..usize::MAX);
-
         move |runnable| {
             state.queue.push(runnable);
             state.notify();
@@ -473,7 +471,7 @@ struct State {
     queue: GlobalQueue,
 
     /// Local queues created by runners.
-    local_queues: RwLock<Vec<Arc<LocalQueue>>>,
+    local_queues: RwLock<Arena<LocalQueueHandle>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
@@ -490,7 +488,7 @@ impl State {
     fn new() -> State {
         State {
             queue: GlobalQueue::default(),
-            local_queues: RwLock::new(Vec::new()),
+            local_queues: RwLock::new(Arena::new()),
             notified: AtomicBool::new(true),
             sleepers: parking_lot::Mutex::new(Sleepers {
                 count: 0,
@@ -719,7 +717,16 @@ impl Drop for Ticker {
 struct TlsData {
     state: Arc<State>,
     ticker: Arc<Ticker>,
-    local_queue: Arc<LocalQueue>,
+    pending_tasks: Vec<(u64, Runnable)>,
+}
+
+impl Drop for TlsData {
+    fn drop(&mut self) {
+        // move the pending tasks into the state
+        for (_, task) in self.pending_tasks.drain(0..) {
+            self.state.queue.push(task)
+        }
+    }
 }
 
 thread_local! {
@@ -732,23 +739,36 @@ fn clear_tls() {
 
 fn try_push_tls(state: &Arc<State>, task_id: u64, runnable: Runnable) -> Result<(), Runnable> {
     TLS.with(|tls| {
-        let tls = tls.borrow();
-        if let Some(tlsdata) = tls.as_ref() {
-            if !Arc::ptr_eq(state, &tlsdata.state) {
-                return Err(runnable);
+        let tls = tls.try_borrow_mut();
+        if let Ok(mut tls) = tls {
+            if let Some(tlsdata) = tls.as_mut() {
+                if !Arc::ptr_eq(state, &tlsdata.state) {
+                    return Err(runnable);
+                }
+                tlsdata.pending_tasks.push((task_id, runnable));
+                // notify ticker
+                // eprintln!("successfully pushed locally");
+                if let Some(v) = tlsdata.ticker.wake() {
+                    v.wake()
+                }
+                Ok(())
+            } else {
+                Err(runnable)
             }
-            if let Err(err) = tlsdata.local_queue.push(task_id, runnable) {
-                return Err(err);
-            }
-            // notify ticker
-            // eprintln!("successfully pushed locally");
-            if let Some(v) = tlsdata.ticker.wake() {
-                v.wake()
-            }
-            Ok(())
         } else {
             // eprintln!("WARNING! CANNOT PUSH TO TLS");
             Err(runnable)
+        }
+    })
+}
+
+fn try_pop_tls() -> Option<Vec<(u64, Runnable)>> {
+    TLS.with(|tls| {
+        let mut tls = tls.borrow_mut();
+        if let Some(tlsdata) = tls.as_mut() {
+            Some(std::mem::replace(&mut tlsdata.pending_tasks, Vec::new()))
+        } else {
+            None
         }
     })
 }
@@ -769,22 +789,26 @@ struct Runner {
 
     /// Bumped every time a runnable task is found.
     ticks: AtomicUsize,
+
+    /// ID.
+    id: usize,
 }
 
 impl Runner {
     /// Creates a runner and registers it in the executor state.
     fn new(state: Arc<State>) -> Runner {
-        let runner = Runner {
+        let mut runner = Runner {
             state: state.clone(),
             ticker: Arc::new(Ticker::new(state.clone())),
             local: Arc::new(LocalQueue::default()),
             ticks: AtomicUsize::new(0),
+            id: 0,
         };
-        state
+        runner.id = state
             .local_queues
             .write()
             .unwrap()
-            .push(runner.local.clone());
+            .insert(runner.local.handle());
         runner
     }
 
@@ -798,7 +822,7 @@ impl Runner {
                 *tls = Some(TlsData {
                     state: self.state.clone(),
                     ticker: self.ticker.clone(),
-                    local_queue: self.local.clone(),
+                    pending_tasks: Vec::new(),
                 })
             }
         })
@@ -811,7 +835,18 @@ impl Runner {
         let runnable = self
             .ticker
             .runnable_with(|| {
+                // Try the TLS.
+                if let Some(r) = try_pop_tls() {
+                    for (task_id, task) in r {
+                        // SAFETY: only one thread can push to self.local at the same time
+                        if let Err(task) = self.local.push(task_id, task) {
+                            self.state.queue.push(task);
+                        }
+                    }
+                }
+
                 // Try the local queue.
+                // SAFETY: only one thread can pop at the same time
                 if let Some(r) = self.local.pop() {
                     return Some(r);
                 }
@@ -844,10 +879,10 @@ impl Runner {
                     .take(n);
 
                 // Remove this runner's local queue.
-                let iter = iter.filter(|local| !Arc::ptr_eq(local, &self.local));
+                let iter = iter.filter(|local| local.0 != self.id);
 
                 // Try stealing from each local queue in the list.
-                for local in iter {
+                for (_, local) in iter {
                     self.local.steal_local(local);
                     if let Some(r) = self.local.pop() {
                         return Some(r);
@@ -873,13 +908,10 @@ impl Runner {
 impl Drop for Runner {
     fn drop(&mut self) {
         // Remove the local queue.
-        self.state
-            .local_queues
-            .write()
-            .unwrap()
-            .retain(|local| !Arc::ptr_eq(local, &self.local));
+        self.state.local_queues.write().unwrap().remove(self.id);
 
         // Re-schedule remaining tasks in the local queue.
+        // SAFETY: this cannot possibly be run from two different threads concurrently.
         while let Some(r) = self.local.pop() {
             r.schedule();
         }

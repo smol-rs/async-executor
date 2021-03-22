@@ -1,45 +1,56 @@
-use std::{cell::UnsafeCell, collections::VecDeque};
+use std::cell::UnsafeCell;
 
 use async_task::Runnable;
-use concurrent_queue::ConcurrentQueue;
+
+use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 
 #[derive(Debug)]
 pub struct GlobalQueue {
-    inner: ConcurrentQueue<Runnable>,
+    inner: Injector<Runnable>,
 }
 
 impl Default for GlobalQueue {
     fn default() -> Self {
         Self {
-            inner: ConcurrentQueue::unbounded(),
+            inner: Injector::default(),
         }
     }
 }
 
 impl GlobalQueue {
     pub fn push(&self, task: Runnable) {
-        self.inner.push(task).unwrap()
+        self.inner.push(task)
     }
 
     pub fn pop(&self) -> Option<Runnable> {
-        self.inner.pop().ok()
+        loop {
+            match self.inner.steal() {
+                Steal::Retry => continue,
+                Steal::Empty => return None,
+                Steal::Success(v) => return Some(v),
+            }
+        }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalQueueHandle {
+    inner: Stealer<Runnable>,
 }
 
 #[derive(Debug)]
 pub struct LocalQueue {
-    inner: ConcurrentQueue<Runnable>,
+    inner: Worker<Runnable>,
     last_pushed: UnsafeCell<u64>,
     next_task: UnsafeCell<Option<Runnable>>,
 }
 
 unsafe impl Send for LocalQueue {}
-unsafe impl Sync for LocalQueue {}
 
 impl Default for LocalQueue {
     fn default() -> Self {
         Self {
-            inner: ConcurrentQueue::bounded(512),
+            inner: Worker::new_fifo(),
             last_pushed: Default::default(),
             next_task: Default::default(),
         }
@@ -51,11 +62,11 @@ impl LocalQueue {
         let last_pushed = unsafe { &mut *self.last_pushed.get() };
         // if this is the same task as last time, we don't push to next_task
         if task_id == *last_pushed {
-            self.inner.push(task).map_err(|err| err.into_inner())?;
+            self.inner.push(task);
         } else {
             let next_task = self.next_task();
             if let Some(task) = next_task.replace(task) {
-                self.inner.push(task).map_err(|err| err.into_inner())?;
+                self.inner.push(task);
             }
         }
         *last_pushed = task_id;
@@ -67,7 +78,7 @@ impl LocalQueue {
         if let Some(next_task) = next_task.take() {
             Some(next_task)
         } else {
-            self.inner.pop().ok()
+            self.inner.pop()
         }
     }
 
@@ -77,42 +88,45 @@ impl LocalQueue {
     }
 
     pub fn steal_global(&self, other: &GlobalQueue) {
-        let mut count = (other.inner.len() + 1) / 2;
+        let _ = other.inner.steal_batch(&self.inner);
+        // let mut count = (other.inner.len() + 1) / 2;
 
-        if count > 0 {
-            // Don't steal more than fits into the queue.
-            if let Some(cap) = self.inner.capacity() {
-                count = count.min(cap - self.inner.len());
-            }
-
-            // Steal tasks.
-            for _ in 0..count {
-                if let Some(t) = other.pop() {
-                    assert!(self.inner.push(t).is_ok());
-                } else {
-                    break;
-                }
-            }
-        }
+        // if count > 0 {
+        //     // Steal tasks.
+        //     for _ in 0..count {
+        //         if let Some(t) = other.pop() {
+        //             assert!(self.inner.push(t).is_ok());
+        //         } else {
+        //             break;
+        //         }
+        //     }
+        // }
     }
 
-    pub fn steal_local(&self, other: &LocalQueue) {
-        let mut count = (other.inner.len() + 1) / 2;
+    pub fn steal_local(&self, other: &LocalQueueHandle) {
+        let _ = other.inner.steal_batch(&self.inner);
+        // let mut count = (other.inner.len() + 1) / 2;
 
-        if count > 0 {
-            // Don't steal more than fits into the queue.
-            if let Some(cap) = self.inner.capacity() {
-                count = count.min(cap - self.inner.len());
-            }
+        // if count > 0 {
+        //     // Don't steal more than fits into the queue.
+        //     if let Some(cap) = self.inner.capacity() {
+        //         count = count.min(cap - self.inner.len());
+        //     }
 
-            // Steal tasks.
-            for _ in 0..count {
-                if let Ok(t) = other.inner.pop() {
-                    assert!(self.inner.push(t).is_ok());
-                } else {
-                    break;
-                }
-            }
+        //     // Steal tasks.
+        //     for _ in 0..count {
+        //         if let Ok(t) = other.inner.pop() {
+        //             assert!(self.inner.push(t).is_ok());
+        //         } else {
+        //             break;
+        //         }
+        //     }
+        // }
+    }
+
+    pub fn handle(&self) -> LocalQueueHandle {
+        LocalQueueHandle {
+            inner: self.inner.stealer(),
         }
     }
 }
