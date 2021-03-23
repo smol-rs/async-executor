@@ -220,7 +220,7 @@ impl<'a> Executor<'a> {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        let runner = Runner::new(self.state().clone());
+        let mut runner = Runner::new(self.state().clone());
         runner.set_tls_active();
         let _guard = CallOnDrop(clear_tls);
         // A future that runs tasks forever.
@@ -477,7 +477,7 @@ struct State {
     notified: AtomicBool,
 
     /// A list of sleeping tickers.
-    sleepers: parking_lot::Mutex<Sleepers>,
+    sleepers: Mutex<Sleepers>,
 
     /// Currently active tasks.
     active: Mutex<Arena<Waker>>,
@@ -490,7 +490,7 @@ impl State {
             queue: GlobalQueue::default(),
             local_queues: RwLock::new(Arena::new()),
             notified: AtomicBool::new(true),
-            sleepers: parking_lot::Mutex::new(Sleepers {
+            sleepers: Mutex::new(Sleepers {
                 count: 0,
                 wakers: Vec::new(),
                 free_ids: Vec::new(),
@@ -507,7 +507,7 @@ impl State {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            let waker = self.sleepers.lock().notify();
+            let waker = self.sleepers.lock().unwrap().notify();
             if let Some(w) = waker {
                 w.wake();
             }
@@ -620,7 +620,7 @@ impl Ticker {
     ///
     /// Returns `false` if the ticker was already sleeping and unnotified.
     fn sleep(&self, waker: &Waker) -> bool {
-        let mut sleepers = self.state.sleepers.lock();
+        let mut sleepers = self.state.sleepers.lock().unwrap();
 
         match self.sleeping.load(Ordering::SeqCst) {
             // Move to sleeping state.
@@ -647,7 +647,7 @@ impl Ticker {
     fn wake(&self) -> Option<Waker> {
         let id = self.sleeping.swap(0, Ordering::SeqCst);
         if id != 0 {
-            let mut sleepers = self.state.sleepers.lock();
+            let mut sleepers = self.state.sleepers.lock().unwrap();
             let toret = sleepers.remove(id);
 
             self.state
@@ -698,7 +698,7 @@ impl Drop for Ticker {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         let id = self.sleeping.swap(0, Ordering::SeqCst);
         if id != 0 {
-            let mut sleepers = self.state.sleepers.lock();
+            let mut sleepers = self.state.sleepers.lock().unwrap();
             let notified = sleepers.remove(id).is_none();
 
             self.state
@@ -766,7 +766,10 @@ fn try_pop_tls() -> Option<Vec<(u64, Runnable)>> {
     TLS.with(|tls| {
         let mut tls = tls.borrow_mut();
         if let Some(tlsdata) = tls.as_mut() {
-            Some(std::mem::replace(&mut tlsdata.pending_tasks, Vec::new()))
+            Some(std::mem::replace(
+                &mut tlsdata.pending_tasks,
+                Vec::with_capacity(4),
+            ))
         } else {
             None
         }
@@ -785,7 +788,7 @@ struct Runner {
     ticker: Arc<Ticker>,
 
     /// The local queue.
-    local: Arc<LocalQueue>,
+    local: LocalQueue,
 
     /// Bumped every time a runnable task is found.
     ticks: AtomicUsize,
@@ -800,7 +803,7 @@ impl Runner {
         let mut runner = Runner {
             state: state.clone(),
             ticker: Arc::new(Ticker::new(state.clone())),
-            local: Arc::new(LocalQueue::default()),
+            local: LocalQueue::default(),
             ticks: AtomicUsize::new(0),
             id: 0,
         };
@@ -829,11 +832,10 @@ impl Runner {
     }
 
     /// Waits for the next runnable task to run.
-    async fn runnable(&self) -> Runnable {
-        // static STEALING_COUNT: AtomicUsize = AtomicUsize::new(0);
-
+    async fn runnable(&mut self) -> Runnable {
         let runnable = self
             .ticker
+            .clone()
             .runnable_with(|| {
                 // Try the TLS.
                 if let Some(r) = try_pop_tls() {
@@ -857,15 +859,6 @@ impl Runner {
                     return Some(r);
                 }
 
-                // let steal_count = STEALING_COUNT.fetch_add(1, Ordering::Relaxed);
-                // let _guard = CallOnDrop(|| {
-                //     STEALING_COUNT.fetch_sub(1, Ordering::Relaxed);
-                // });
-                // // limit steal contention on many-cpued systems
-                // if steal_count > 4 {
-                //     return None;
-                // }
-
                 // Try stealing from other runners.
                 let local_queues = self.state.local_queues.read().unwrap();
 
@@ -879,7 +872,8 @@ impl Runner {
                     .take(n);
 
                 // Remove this runner's local queue.
-                let iter = iter.filter(|local| local.0 != self.id);
+                let id = self.id;
+                let iter = iter.filter(|local| local.0 != id);
 
                 // Try stealing from each local queue in the list.
                 for (_, local) in iter {

@@ -58,7 +58,7 @@ impl Default for LocalQueue {
 }
 
 impl LocalQueue {
-    pub fn push(&self, task_id: u64, task: Runnable) -> Result<(), Runnable> {
+    pub fn push(&mut self, task_id: u64, task: Runnable) -> Result<(), Runnable> {
         let last_pushed = unsafe { &mut *self.last_pushed.get() };
         // if this is the same task as last time, we don't push to next_task
         if task_id == *last_pushed {
@@ -73,7 +73,7 @@ impl LocalQueue {
         Ok(())
     }
 
-    pub fn pop(&self) -> Option<Runnable> {
+    pub fn pop(&mut self) -> Option<Runnable> {
         let next_task = self.next_task();
         if let Some(next_task) = next_task.take() {
             Some(next_task)

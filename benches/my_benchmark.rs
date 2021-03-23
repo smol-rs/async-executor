@@ -52,15 +52,16 @@ fn spawn_many(b: &mut criterion::Bencher) {
     });
 }
 
-fn spawn_recursively(b: &mut criterion::Bencher) {
+fn spawn_executors_recursively(b: &mut criterion::Bencher) {
     fn go(i: usize) -> impl Future<Output = ()> + Send + 'static {
         async move {
             if i != 0 {
-                EX.spawn(async move {
+                let exec = async_executor::Executor::new();
+                let task = exec.spawn(async move {
                     let fut = go(i - 1).boxed();
                     fut.await;
-                })
-                .await;
+                });
+                exec.run(task).await
             }
         }
     }
@@ -185,6 +186,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("spawn_many", spawn_many);
     c.bench_function("yield_now", yield_now);
     c.bench_function("ping_pong", ping_pong);
+    c.bench_function("spawn_executors_recursively", spawn_executors_recursively);
     c.bench_function("context_switch_quiet", context_switch_quiet);
     c.bench_function("context_switch_busy", context_switch_busy);
 }
