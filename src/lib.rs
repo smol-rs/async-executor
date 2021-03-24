@@ -242,11 +242,11 @@ impl<'a> Executor<'a> {
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
         let state = self.state().clone();
 
-        let task_id = fastrand::u64(0..u64::MAX);
         // Try to push to the local queue. If it doesn't work, push to the global queue.
         move |runnable| {
+            let is_yield = fastrand::f32() < 0.1;
             // eprintln!("scheduling task {}", task_id);
-            if let Err(runnable) = try_push_tls(&state, task_id, runnable) {
+            if let Err(runnable) = try_push_tls(&state, is_yield, runnable) {
                 state.queue.push(runnable);
                 state.notify();
             }
@@ -717,7 +717,7 @@ impl Drop for Ticker {
 struct TlsData {
     state: Arc<State>,
     ticker: Arc<Ticker>,
-    pending_tasks: Vec<(u64, Runnable)>,
+    pending_tasks: Vec<(bool, Runnable)>,
 }
 
 impl Drop for TlsData {
@@ -737,7 +737,7 @@ fn clear_tls() {
     TLS.with(|v| *v.borrow_mut() = Default::default())
 }
 
-fn try_push_tls(state: &Arc<State>, task_id: u64, runnable: Runnable) -> Result<(), Runnable> {
+fn try_push_tls(state: &Arc<State>, is_yield: bool, runnable: Runnable) -> Result<(), Runnable> {
     TLS.with(|tls| {
         let tls = tls.try_borrow_mut();
         if let Ok(mut tls) = tls {
@@ -745,7 +745,7 @@ fn try_push_tls(state: &Arc<State>, task_id: u64, runnable: Runnable) -> Result<
                 if !Arc::ptr_eq(state, &tlsdata.state) {
                     return Err(runnable);
                 }
-                tlsdata.pending_tasks.push((task_id, runnable));
+                tlsdata.pending_tasks.push((is_yield, runnable));
                 // notify ticker
                 // eprintln!("successfully pushed locally");
                 if let Some(v) = tlsdata.ticker.wake() {
@@ -762,7 +762,7 @@ fn try_push_tls(state: &Arc<State>, task_id: u64, runnable: Runnable) -> Result<
     })
 }
 
-fn try_pop_tls() -> Option<Vec<(u64, Runnable)>> {
+fn try_pop_tls() -> Option<Vec<(bool, Runnable)>> {
     TLS.with(|tls| {
         let mut tls = tls.borrow_mut();
         if let Some(tlsdata) = tls.as_mut() {
@@ -839,9 +839,9 @@ impl Runner {
             .runnable_with(|| {
                 // Try the TLS.
                 if let Some(r) = try_pop_tls() {
-                    for (task_id, task) in r {
+                    for (is_yield, task) in r {
                         // SAFETY: only one thread can push to self.local at the same time
-                        if let Err(task) = self.local.push(task_id, task) {
+                        if let Err(task) = self.local.push(is_yield, task) {
                             self.state.queue.push(task);
                         }
                     }

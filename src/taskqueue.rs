@@ -41,7 +41,6 @@ pub struct LocalQueueHandle {
 #[derive(Debug)]
 pub struct LocalQueue {
     inner: Worker<Runnable>,
-    last_pushed: UnsafeCell<u64>,
     next_task: UnsafeCell<Option<Runnable>>,
 }
 
@@ -51,17 +50,15 @@ impl Default for LocalQueue {
     fn default() -> Self {
         Self {
             inner: Worker::new_fifo(),
-            last_pushed: Default::default(),
             next_task: Default::default(),
         }
     }
 }
 
 impl LocalQueue {
-    pub fn push(&mut self, task_id: u64, task: Runnable) -> Result<(), Runnable> {
-        let last_pushed = unsafe { &mut *self.last_pushed.get() };
+    pub fn push(&mut self, is_yield: bool, task: Runnable) -> Result<(), Runnable> {
         // if this is the same task as last time, we don't push to next_task
-        if task_id == *last_pushed {
+        if is_yield {
             self.inner.push(task);
         } else {
             let next_task = self.next_task();
@@ -69,7 +66,6 @@ impl LocalQueue {
                 self.inner.push(task);
             }
         }
-        *last_pushed = task_id;
         Ok(())
     }
 
