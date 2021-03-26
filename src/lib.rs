@@ -21,10 +21,13 @@
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 mod taskqueue;
-use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Poll, Waker};
+use std::{
+    cell::Cell,
+    panic::{RefUnwindSafe, UnwindSafe},
+};
 use std::{cell::RefCell, future::Future};
 use std::{marker::PhantomData, sync::RwLock};
 use std::{rc::Rc, sync::Mutex};
@@ -228,7 +231,8 @@ impl<'a> Executor<'a> {
             loop {
                 for _ in 0..200 {
                     let runnable = runner.runnable().await;
-                    runnable.run();
+                    let yielded = runnable.run();
+                    JUST_YIELDED.with(|v| v.replace(yielded));
                 }
                 future::yield_now().await;
             }
@@ -244,9 +248,7 @@ impl<'a> Executor<'a> {
 
         // Try to push to the local queue. If it doesn't work, push to the global queue.
         move |runnable| {
-            let is_yield = fastrand::f32() < 0.1;
-            // eprintln!("scheduling task {}", task_id);
-            if let Err(runnable) = try_push_tls(&state, is_yield, runnable) {
+            if let Err(runnable) = try_push_tls(&state, runnable) {
                 state.queue.push(runnable);
                 state.notify();
             }
@@ -257,6 +259,10 @@ impl<'a> Executor<'a> {
     fn state(&self) -> &Arc<State> {
         self.state.get_or_init(|| Arc::new(State::new()))
     }
+}
+
+thread_local! {
+    static JUST_YIELDED: Cell<bool> = Cell::new(false);
 }
 
 impl Drop for Executor<'_> {
@@ -717,13 +723,13 @@ impl Drop for Ticker {
 struct TlsData {
     state: Arc<State>,
     ticker: Arc<Ticker>,
-    pending_tasks: Vec<(bool, Runnable)>,
+    pending_tasks: Vec<Runnable>,
 }
 
 impl Drop for TlsData {
     fn drop(&mut self) {
         // move the pending tasks into the state
-        for (_, task) in self.pending_tasks.drain(0..) {
+        for task in self.pending_tasks.drain(0..) {
             self.state.queue.push(task)
         }
     }
@@ -737,7 +743,7 @@ fn clear_tls() {
     TLS.with(|v| *v.borrow_mut() = Default::default())
 }
 
-fn try_push_tls(state: &Arc<State>, is_yield: bool, runnable: Runnable) -> Result<(), Runnable> {
+fn try_push_tls(state: &Arc<State>, runnable: Runnable) -> Result<(), Runnable> {
     TLS.with(|tls| {
         let tls = tls.try_borrow_mut();
         if let Ok(mut tls) = tls {
@@ -745,7 +751,7 @@ fn try_push_tls(state: &Arc<State>, is_yield: bool, runnable: Runnable) -> Resul
                 if !Arc::ptr_eq(state, &tlsdata.state) {
                     return Err(runnable);
                 }
-                tlsdata.pending_tasks.push((is_yield, runnable));
+                tlsdata.pending_tasks.push(runnable);
                 // notify ticker
                 // eprintln!("successfully pushed locally");
                 if let Some(v) = tlsdata.ticker.wake() {
@@ -762,7 +768,7 @@ fn try_push_tls(state: &Arc<State>, is_yield: bool, runnable: Runnable) -> Resul
     })
 }
 
-fn try_pop_tls() -> Option<Vec<(bool, Runnable)>> {
+fn try_pop_tls() -> Option<Vec<Runnable>> {
     TLS.with(|tls| {
         let mut tls = tls.borrow_mut();
         if let Some(tlsdata) = tls.as_mut() {
@@ -837,11 +843,12 @@ impl Runner {
             .ticker
             .clone()
             .runnable_with(|| {
+                let must_yield = JUST_YIELDED.with(|v| v.replace(false));
                 // Try the TLS.
                 if let Some(r) = try_pop_tls() {
-                    for (is_yield, task) in r {
+                    for task in r {
                         // SAFETY: only one thread can push to self.local at the same time
-                        if let Err(task) = self.local.push(is_yield, task) {
+                        if let Err(task) = self.local.push(must_yield, task) {
                             self.state.queue.push(task);
                         }
                     }
