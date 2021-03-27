@@ -24,6 +24,7 @@ num_cpus = "1.13.0"
 # crossbeam-queue="0.3"
 # atomicring="1.2.7"
 crossbeam-deque="0.8"
+cache-padded="1"
 
 [dev-dependencies]
 async-oneshot="0.5"

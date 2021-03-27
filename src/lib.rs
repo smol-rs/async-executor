@@ -33,6 +33,7 @@ use std::{marker::PhantomData, sync::RwLock};
 use std::{rc::Rc, sync::Mutex};
 
 use async_task::Runnable;
+use cache_padded::CachePadded;
 use futures_lite::{future, prelude::*};
 use taskqueue::{GlobalQueue, LocalQueue, LocalQueueHandle};
 use vec_arena::Arena;
@@ -685,10 +686,12 @@ impl Ticker {
                     Some(r) => {
                         // Wake up.
                         self.wake();
+                        // Sometimes notify another ticker now to pick up where this ticker left off, just in
+                        // case running the task takes a long time. This eventually lets stuff get stolen.
 
-                        // Notify another ticker now to pick up where this ticker left off, just in
-                        // case running the task takes a long time.
-                        self.state.notify();
+                        if fastrand::f32() < 0.1 {
+                            self.state.notify();
+                        }
 
                         return Poll::Ready(r);
                     }
@@ -859,10 +862,13 @@ impl Runner {
                 if let Some(r) = self.local.pop() {
                     return Some(r);
                 }
+                // Increment the searching count
+                // let searching = self.state.searching_runners.load(Ordering::Relaxed);
 
+                // if searching < 4 {
                 // Try stealing from the global queue.
-                if let Some(r) = self.state.queue.pop() {
-                    self.local.steal_global(&self.state.queue);
+                self.local.steal_global(&self.state.queue);
+                if let Some(r) = self.local.pop() {
                     return Some(r);
                 }
 
@@ -889,7 +895,7 @@ impl Runner {
                         return Some(r);
                     }
                 }
-
+                // }
                 None
             })
             .await;

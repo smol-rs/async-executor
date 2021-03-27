@@ -84,40 +84,11 @@ impl LocalQueue {
     }
 
     pub fn steal_global(&self, other: &GlobalQueue) {
-        let _ = other.inner.steal_batch(&self.inner);
-        // let mut count = (other.inner.len() + 1) / 2;
-
-        // if count > 0 {
-        //     // Steal tasks.
-        //     for _ in 0..count {
-        //         if let Some(t) = other.pop() {
-        //             assert!(self.inner.push(t).is_ok());
-        //         } else {
-        //             break;
-        //         }
-        //     }
-        // }
+        std::iter::repeat_with(|| other.inner.steal_batch(&self.inner)).find(|v| !v.is_retry());
     }
 
     pub fn steal_local(&self, other: &LocalQueueHandle) {
         let _ = other.inner.steal_batch(&self.inner);
-        // let mut count = (other.inner.len() + 1) / 2;
-
-        // if count > 0 {
-        //     // Don't steal more than fits into the queue.
-        //     if let Some(cap) = self.inner.capacity() {
-        //         count = count.min(cap - self.inner.len());
-        //     }
-
-        //     // Steal tasks.
-        //     for _ in 0..count {
-        //         if let Ok(t) = other.inner.pop() {
-        //             assert!(self.inner.push(t).is_ok());
-        //         } else {
-        //             break;
-        //         }
-        //     }
-        // }
     }
 
     pub fn handle(&self) -> LocalQueueHandle {
