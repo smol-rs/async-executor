@@ -689,7 +689,7 @@ impl Ticker {
                         // Sometimes notify another ticker now to pick up where this ticker left off, just in
                         // case running the task takes a long time. This eventually lets stuff get stolen.
 
-                        if fastrand::f32() < 0.1 {
+                        if fastrand::f32() < 0.01 {
                             self.state.notify();
                         }
 
@@ -747,6 +747,9 @@ fn clear_tls() {
 }
 
 fn try_push_tls(state: &Arc<State>, runnable: Runnable) -> Result<(), Runnable> {
+    // if fastrand::f32() < 0.001 {
+    //     return Err(runnable);
+    // }
     TLS.with(|tls| {
         let tls = tls.try_borrow_mut();
         if let Ok(mut tls) = tls {
