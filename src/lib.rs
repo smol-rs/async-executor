@@ -700,7 +700,6 @@ impl Ticker {
                         if self.state.searching_count.load(Ordering::Relaxed) == 0 {
                             self.state.notify();
                         }
-
                         return Poll::Ready(r);
                     }
                 }
@@ -871,7 +870,6 @@ impl Runner {
                 }
 
                 self.state.searching_count.fetch_add(1, Ordering::Relaxed);
-
                 // Try stealing from the global queue.
                 self.local.steal_global(&self.state.queue);
                 if let Some(r) = self.local.pop() {
@@ -905,6 +903,8 @@ impl Runner {
                         }
                     }
                 }
+
+                self.state.searching_count.fetch_sub(1, Ordering::Relaxed);
                 None
             })
             .await;
