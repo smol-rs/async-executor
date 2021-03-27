@@ -477,6 +477,9 @@ struct State {
     /// The global queue.
     queue: GlobalQueue,
 
+    /// Count of searching runners.
+    searching_count: AtomicUsize,
+
     /// Local queues created by runners.
     local_queues: RwLock<Arena<LocalQueueHandle>>,
 
@@ -495,6 +498,7 @@ impl State {
     fn new() -> State {
         State {
             queue: GlobalQueue::default(),
+            searching_count: AtomicUsize::new(0),
             local_queues: RwLock::new(Arena::new()),
             notified: AtomicBool::new(true),
             sleepers: Mutex::new(Sleepers {
@@ -675,7 +679,12 @@ impl Ticker {
     async fn runnable_with(&self, mut search: impl FnMut() -> Option<Runnable>) -> Runnable {
         future::poll_fn(|cx| {
             loop {
-                match search() {
+                // This kills performance somehow
+                // DEBUG_SEARCHING_COUNT.fetch_add(1, Ordering::Relaxed);
+                let res = search();
+                // DEBUG_SEARCHING_COUNT.fetch_sub(1, Ordering::Relaxed);
+
+                match res {
                     None => {
                         // Move to sleeping and unnotified state.
                         if !self.sleep(cx.waker()) {
@@ -688,10 +697,9 @@ impl Ticker {
                         self.wake();
                         // Sometimes notify another ticker now to pick up where this ticker left off, just in
                         // case running the task takes a long time. This eventually lets stuff get stolen.
-
-                        // if fastrand::f32() < 0.01 {
-                        self.state.notify();
-                        // }
+                        if self.state.searching_count.load(Ordering::Relaxed) == 0 {
+                            self.state.notify();
+                        }
 
                         return Poll::Ready(r);
                     }
@@ -800,7 +808,7 @@ struct Runner {
     local: LocalQueue,
 
     /// Bumped every time a runnable task is found.
-    ticks: AtomicUsize,
+    ticks: usize,
 
     /// ID.
     id: usize,
@@ -813,7 +821,7 @@ impl Runner {
             state: state.clone(),
             ticker: Arc::new(Ticker::new(state.clone())),
             local: LocalQueue::default(),
-            ticks: AtomicUsize::new(0),
+            ticks: 0,
             id: 0,
         };
         runner.id = state
@@ -858,52 +866,53 @@ impl Runner {
                 }
 
                 // Try the local queue.
-                // SAFETY: only one thread can pop at the same time
                 if let Some(r) = self.local.pop() {
                     return Some(r);
                 }
-                // Increment the searching count
-                // let searching = self.state.searching_runners.load(Ordering::Relaxed);
 
-                // if searching < 4 {
+                self.state.searching_count.fetch_add(1, Ordering::Relaxed);
+
                 // Try stealing from the global queue.
                 self.local.steal_global(&self.state.queue);
                 if let Some(r) = self.local.pop() {
+                    self.state.searching_count.fetch_sub(1, Ordering::Relaxed);
                     return Some(r);
                 }
 
                 // Try stealing from other runners.
-                let local_queues = self.state.local_queues.read().unwrap();
+                {
+                    let local_queues = self.state.local_queues.read().unwrap();
 
-                // Pick a random starting point in the iterator list and rotate the list.
-                let n = local_queues.len();
-                let start = fastrand::usize(..n);
-                let iter = local_queues
-                    .iter()
-                    .chain(local_queues.iter())
-                    .skip(start)
-                    .take(n);
+                    // Pick a random starting point in the iterator list and rotate the list.
+                    let n = local_queues.len();
+                    let start = fastrand::usize(..n);
+                    let iter = local_queues
+                        .iter()
+                        .chain(local_queues.iter())
+                        .skip(start)
+                        .take(n);
 
-                // Remove this runner's local queue.
-                let id = self.id;
-                let iter = iter.filter(|local| local.0 != id);
+                    // Remove this runner's local queue.
+                    let id = self.id;
+                    let iter = iter.filter(|local| local.0 != id);
 
-                // Try stealing from each local queue in the list.
-                for (_, local) in iter {
-                    self.local.steal_local(local);
-                    if let Some(r) = self.local.pop() {
-                        return Some(r);
+                    // Try stealing from each local queue in the list.
+                    for (_, local) in iter {
+                        self.local.steal_local(local);
+                        if let Some(r) = self.local.pop() {
+                            self.state.searching_count.fetch_sub(1, Ordering::Relaxed);
+                            return Some(r);
+                        }
                     }
                 }
-                // }
                 None
             })
             .await;
 
         // Bump the tick counter.
-        let ticks = self.ticks.fetch_add(1, Ordering::Relaxed);
+        self.ticks += 1;
 
-        if ticks % 64 == 0 {
+        if self.ticks % 64 == 0 {
             // Steal tasks from the global queue to ensure fair task scheduling.
             self.local.steal_global(&self.state.queue)
         }
