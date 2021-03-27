@@ -697,7 +697,9 @@ impl Ticker {
                         self.wake();
                         // Sometimes notify another ticker now to pick up where this ticker left off, just in
                         // case running the task takes a long time. This eventually lets stuff get stolen.
-                        if self.state.searching_count.load(Ordering::Relaxed) == 0 {
+                        if self.state.searching_count.load(Ordering::Relaxed) == 0
+                            && fastrand::f32() < 0.01
+                        {
                             self.state.notify();
                         }
                         return Poll::Ready(r);
