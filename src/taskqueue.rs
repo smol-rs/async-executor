@@ -78,6 +78,10 @@ impl LocalQueue {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
     #[allow(clippy::clippy::mut_from_ref)]
     fn next_task(&self) -> &mut Option<Runnable> {
         unsafe { &mut *self.next_task.get() }

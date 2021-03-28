@@ -21,6 +21,8 @@
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
 mod taskqueue;
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Poll, Waker};
@@ -29,12 +31,12 @@ use std::{
     panic::{RefUnwindSafe, UnwindSafe},
 };
 use std::{cell::RefCell, future::Future};
-use std::{marker::PhantomData, sync::RwLock};
-use std::{rc::Rc, sync::Mutex};
 
 use async_task::Runnable;
+
 use cache_padded::CachePadded;
 use futures_lite::{future, prelude::*};
+use parking_lot::{Mutex, RwLock};
 use taskqueue::{GlobalQueue, LocalQueue, LocalQueueHandle};
 use vec_arena::Arena;
 
@@ -116,7 +118,7 @@ impl<'a> Executor<'a> {
     /// assert!(ex.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.state().active.lock().unwrap().is_empty()
+        self.state().active.lock().is_empty()
     }
 
     /// Spawns a task onto the executor.
@@ -133,13 +135,13 @@ impl<'a> Executor<'a> {
     /// });
     /// ```
     pub fn spawn<T: Send + 'a>(&self, future: impl Future<Output = T> + Send + 'a) -> Task<T> {
-        let mut active = self.state().active.lock().unwrap();
+        let mut active = self.state().active.lock();
 
         // Remove the task from the set of active tasks when the future finishes.
         let index = active.next_vacant();
         let state = self.state().clone();
         let future = async move {
-            let _guard = CallOnDrop(move || drop(state.active.lock().unwrap().remove(index)));
+            let _guard = CallOnDrop(move || drop(state.active.lock().remove(index)));
             future.await
         };
 
@@ -269,7 +271,7 @@ thread_local! {
 impl Drop for Executor<'_> {
     fn drop(&mut self) {
         if let Some(state) = self.state.get() {
-            let mut active = state.active.lock().unwrap();
+            let mut active = state.active.lock();
             for i in 0..active.capacity() {
                 if let Some(w) = active.remove(i) {
                     w.wake();
@@ -369,13 +371,13 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
-        let mut active = self.inner().state().active.lock().unwrap();
+        let mut active = self.inner().state().active.lock();
 
         // Remove the task from the set of active tasks when the future finishes.
         let index = active.next_vacant();
         let state = self.inner().state().clone();
         let future = async move {
-            let _guard = CallOnDrop(move || drop(state.active.lock().unwrap().remove(index)));
+            let _guard = CallOnDrop(move || drop(state.active.lock().remove(index)));
             future.await
         };
 
@@ -475,38 +477,39 @@ impl<'a> Default for LocalExecutor<'a> {
 #[derive(Debug)]
 struct State {
     /// The global queue.
-    queue: GlobalQueue,
+    queue: CachePadded<GlobalQueue>,
 
     /// Count of searching runners.
-    searching_count: AtomicUsize,
+    searching_count: CachePadded<AtomicUsize>,
 
     /// Local queues created by runners.
-    local_queues: RwLock<Arena<LocalQueueHandle>>,
+    local_queues: CachePadded<RwLock<Arena<LocalQueueHandle>>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
-    notified: AtomicBool,
+    notified: CachePadded<AtomicBool>,
 
     /// A list of sleeping tickers.
-    sleepers: Mutex<Sleepers>,
+    sleepers: CachePadded<Mutex<Sleepers>>,
 
     /// Currently active tasks.
-    active: Mutex<Arena<Waker>>,
+    active: CachePadded<Mutex<Arena<Waker>>>,
 }
 
 impl State {
     /// Creates state for a new executor.
     fn new() -> State {
         State {
-            queue: GlobalQueue::default(),
-            searching_count: AtomicUsize::new(0),
-            local_queues: RwLock::new(Arena::new()),
-            notified: AtomicBool::new(true),
-            sleepers: Mutex::new(Sleepers {
+            queue: GlobalQueue::default().into(),
+            searching_count: AtomicUsize::new(0).into(),
+            local_queues: RwLock::new(Arena::new()).into(),
+            notified: AtomicBool::new(true).into(),
+            sleepers: parking_lot::Mutex::new(Sleepers {
                 count: 0,
                 wakers: Vec::new(),
                 free_ids: Vec::new(),
-            }),
-            active: Mutex::new(Arena::new()),
+            })
+            .into(),
+            active: Mutex::new(Arena::new()).into(),
         }
     }
 
@@ -518,7 +521,7 @@ impl State {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            let waker = self.sleepers.lock().unwrap().notify();
+            let waker = self.sleepers.lock().notify();
             if let Some(w) = waker {
                 w.wake();
             }
@@ -631,7 +634,7 @@ impl Ticker {
     ///
     /// Returns `false` if the ticker was already sleeping and unnotified.
     fn sleep(&self, waker: &Waker) -> bool {
-        let mut sleepers = self.state.sleepers.lock().unwrap();
+        let mut sleepers = self.state.sleepers.lock();
 
         match self.sleeping.load(Ordering::SeqCst) {
             // Move to sleeping state.
@@ -658,7 +661,7 @@ impl Ticker {
     fn wake(&self) -> Option<Waker> {
         let id = self.sleeping.swap(0, Ordering::SeqCst);
         if id != 0 {
-            let mut sleepers = self.state.sleepers.lock().unwrap();
+            let mut sleepers = self.state.sleepers.lock();
             let toret = sleepers.remove(id);
 
             self.state
@@ -672,11 +675,15 @@ impl Ticker {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&self) -> Runnable {
-        self.runnable_with(|| self.state.queue.pop()).await
+        self.runnable_with(|| self.state.queue.pop().map(|v| (v, true)))
+            .await
     }
 
     /// Waits for the next runnable task to run, given a function that searches for a task.
-    async fn runnable_with(&self, mut search: impl FnMut() -> Option<Runnable>) -> Runnable {
+    async fn runnable_with(
+        &self,
+        mut search: impl FnMut() -> Option<(Runnable, bool)>,
+    ) -> Runnable {
         future::poll_fn(|cx| {
             loop {
                 // This kills performance somehow
@@ -692,12 +699,12 @@ impl Ticker {
                             return Poll::Pending;
                         }
                     }
-                    Some(r) => {
+                    Some((r, wake_another)) => {
                         // Wake up.
                         self.wake();
-                        // Sometimes notify another ticker now to pick up where this ticker left off, just in
-                        // case running the task takes a long time. This eventually lets stuff get stolen.
+                        // Sibling notification.
                         if self.state.searching_count.load(Ordering::Relaxed) == 0
+                            && wake_another
                             && fastrand::f32() < 0.01
                         {
                             self.state.notify();
@@ -716,7 +723,7 @@ impl Drop for Ticker {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         let id = self.sleeping.swap(0, Ordering::SeqCst);
         if id != 0 {
-            let mut sleepers = self.state.sleepers.lock().unwrap();
+            let mut sleepers = self.state.sleepers.lock();
             let notified = sleepers.remove(id).is_none();
 
             self.state
@@ -726,6 +733,7 @@ impl Drop for Ticker {
             // If this ticker was notified, then notify another ticker.
             if notified {
                 drop(sleepers);
+                // eprintln!("TICKER DROP");
                 self.state.notify();
             }
         }
@@ -774,7 +782,6 @@ fn try_push_tls(state: &Arc<State>, runnable: Runnable) -> Result<(), Runnable> 
                 Err(runnable)
             }
         } else {
-            // eprintln!("WARNING! CANNOT PUSH TO TLS");
             Err(runnable)
         }
     })
@@ -825,11 +832,7 @@ impl Runner {
             ticks: 0,
             id: 0,
         };
-        runner.id = state
-            .local_queues
-            .write()
-            .unwrap()
-            .insert(runner.local.handle());
+        runner.id = state.local_queues.write().insert(runner.local.handle());
         runner
     }
 
@@ -851,10 +854,15 @@ impl Runner {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&mut self) -> Runnable {
+        // static USELESS_WAKEUP_COUNT: AtomicUsize = AtomicUsize::new(0);
+        // static GOOD_WAKEUP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
         let runnable = self
             .ticker
             .clone()
             .runnable_with(|| {
+                const WAKE_THRESHOLD: usize = 0;
+
                 let must_yield = JUST_YIELDED.with(|v| v.replace(false));
                 // Try the TLS.
                 if let Some(r) = try_pop_tls() {
@@ -868,7 +876,7 @@ impl Runner {
 
                 // Try the local queue.
                 if let Some(r) = self.local.pop() {
-                    return Some(r);
+                    return Some((r, self.local.len() > WAKE_THRESHOLD));
                 }
 
                 self.state.searching_count.fetch_add(1, Ordering::Relaxed);
@@ -876,33 +884,31 @@ impl Runner {
                 self.local.steal_global(&self.state.queue);
                 if let Some(r) = self.local.pop() {
                     self.state.searching_count.fetch_sub(1, Ordering::Relaxed);
-                    return Some(r);
+                    return Some((r, self.local.len() > WAKE_THRESHOLD));
                 }
 
                 // Try stealing from other runners.
-                {
-                    let local_queues = self.state.local_queues.read().unwrap();
+                let local_queues = self.state.local_queues.read();
 
-                    // Pick a random starting point in the iterator list and rotate the list.
-                    let n = local_queues.len();
-                    let start = fastrand::usize(..n);
-                    let iter = local_queues
-                        .iter()
-                        .chain(local_queues.iter())
-                        .skip(start)
-                        .take(n);
+                // Pick a random starting point in the iterator list and rotate the list.
+                let n = local_queues.len();
+                let start = fastrand::usize(..n);
+                let iter = local_queues
+                    .iter()
+                    .chain(local_queues.iter())
+                    .skip(start)
+                    .take(n);
 
-                    // Remove this runner's local queue.
-                    let id = self.id;
-                    let iter = iter.filter(|local| local.0 != id);
+                // Remove this runner's local queue.
+                let id = self.id;
+                let iter = iter.filter(|local| local.0 != id);
 
-                    // Try stealing from each local queue in the list.
-                    for (_, local) in iter {
-                        self.local.steal_local(local);
-                        if let Some(r) = self.local.pop() {
-                            self.state.searching_count.fetch_sub(1, Ordering::Relaxed);
-                            return Some(r);
-                        }
+                // Try stealing from each local queue in the list.
+                for (_, local) in iter {
+                    self.local.steal_local(local);
+                    if let Some(r) = self.local.pop() {
+                        self.state.searching_count.fetch_sub(1, Ordering::Relaxed);
+                        return Some((r, self.local.len() > WAKE_THRESHOLD));
                     }
                 }
 
@@ -926,7 +932,7 @@ impl Runner {
 impl Drop for Runner {
     fn drop(&mut self) {
         // Remove the local queue.
-        self.state.local_queues.write().unwrap().remove(self.id);
+        self.state.local_queues.write().remove(self.id);
 
         // Re-schedule remaining tasks in the local queue.
         // SAFETY: this cannot possibly be run from two different threads concurrently.
