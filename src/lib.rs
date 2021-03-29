@@ -675,15 +675,11 @@ impl Ticker {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&self) -> Runnable {
-        self.runnable_with(|| self.state.queue.pop().map(|v| (v, true)))
-            .await
+        self.runnable_with(|| self.state.queue.pop()).await
     }
 
     /// Waits for the next runnable task to run, given a function that searches for a task.
-    async fn runnable_with(
-        &self,
-        mut search: impl FnMut() -> Option<(Runnable, bool)>,
-    ) -> Runnable {
+    async fn runnable_with(&self, mut search: impl FnMut() -> Option<Runnable>) -> Runnable {
         future::poll_fn(|cx| {
             loop {
                 // This kills performance somehow
@@ -699,13 +695,12 @@ impl Ticker {
                             return Poll::Pending;
                         }
                     }
-                    Some((r, wake_another)) => {
+                    Some(r) => {
                         // Wake up.
                         self.wake();
                         // Sibling notification.
                         if self.state.searching_count.load(Ordering::Relaxed) == 0
-                            && wake_another
-                            && fastrand::f32() < 0.01
+                            && fastrand::u8(0..) < 5
                         {
                             self.state.notify();
                         }
@@ -861,8 +856,6 @@ impl Runner {
             .ticker
             .clone()
             .runnable_with(|| {
-                const WAKE_THRESHOLD: usize = 0;
-
                 let must_yield = JUST_YIELDED.with(|v| v.replace(false));
                 // Try the TLS.
                 if let Some(r) = try_pop_tls() {
@@ -876,7 +869,7 @@ impl Runner {
 
                 // Try the local queue.
                 if let Some(r) = self.local.pop() {
-                    return Some((r, self.local.len() > WAKE_THRESHOLD));
+                    return Some(r);
                 }
 
                 self.state.searching_count.fetch_add(1, Ordering::Relaxed);
@@ -884,7 +877,7 @@ impl Runner {
                 self.local.steal_global(&self.state.queue);
                 if let Some(r) = self.local.pop() {
                     self.state.searching_count.fetch_sub(1, Ordering::Relaxed);
-                    return Some((r, self.local.len() > WAKE_THRESHOLD));
+                    return Some(r);
                 }
 
                 // Try stealing from other runners.
@@ -908,7 +901,7 @@ impl Runner {
                     self.local.steal_local(local);
                     if let Some(r) = self.local.pop() {
                         self.state.searching_count.fetch_sub(1, Ordering::Relaxed);
-                        return Some((r, self.local.len() > WAKE_THRESHOLD));
+                        return Some(r);
                     }
                 }
 
