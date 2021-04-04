@@ -700,7 +700,7 @@ impl Ticker {
                         self.wake();
                         // Sibling notification.
                         if self.state.searching_count.load(Ordering::Relaxed) == 0
-                            && fastrand::u8(0..) < 5
+                        // && fastrand::u8(0..) < 5
                         {
                             self.state.notify();
                         }
