@@ -1,55 +1,54 @@
-use std::cell::UnsafeCell;
+use std::sync::Arc;
 
 use async_task::Runnable;
 
-use crossbeam_deque::{Injector, Steal, Stealer, Worker};
+use concurrent_queue::ConcurrentQueue;
+use parking_lot::Mutex;
+use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 #[derive(Debug)]
 pub struct GlobalQueue {
-    inner: Injector<Runnable>,
+    inner: ConcurrentQueue<Runnable>,
 }
 
 impl Default for GlobalQueue {
     fn default() -> Self {
         Self {
-            inner: Injector::default(),
+            inner: ConcurrentQueue::unbounded(),
         }
     }
 }
 
 impl GlobalQueue {
     pub fn push(&self, task: Runnable) {
-        self.inner.push(task)
+        self.inner.push(task).unwrap();
     }
 
     pub fn pop(&self) -> Option<Runnable> {
-        loop {
-            match self.inner.steal() {
-                Steal::Retry => continue,
-                Steal::Empty => return None,
-                Steal::Success(v) => return Some(v),
-            }
-        }
+        self.inner.pop().ok()
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct LocalQueueHandle {
-    inner: Stealer<Runnable>,
+    inner: Arc<Mutex<Consumer<Runnable>>>,
 }
 
 #[derive(Debug)]
 pub struct LocalQueue {
-    inner: Worker<Runnable>,
-    next_task: UnsafeCell<Option<Runnable>>,
+    pusher: Producer<Runnable>,
+    popper: Arc<Mutex<Consumer<Runnable>>>,
+    next_task: Option<Runnable>,
 }
 
 unsafe impl Send for LocalQueue {}
 
 impl Default for LocalQueue {
     fn default() -> Self {
+        let (pusher, popper) = RingBuffer::new(512).split();
         Self {
-            inner: Worker::new_fifo(),
+            pusher,
+            popper: Arc::new(Mutex::new(popper)),
             next_task: Default::default(),
         }
     }
@@ -59,45 +58,58 @@ impl LocalQueue {
     pub fn push(&mut self, is_yield: bool, task: Runnable) -> Result<(), Runnable> {
         // if this is the same task as last time, we don't push to next_task
         if is_yield {
-            self.inner.push(task);
-        } else {
-            let next_task = self.next_task();
-            if let Some(task) = next_task.replace(task) {
-                self.inner.push(task);
-            }
+            self.pusher.push(task).map_err(|e| match e {
+                PushError::Full(e) => e,
+            })?;
+        } else if let Some(task) = self.next_task.replace(task) {
+            self.pusher.push(task).map_err(|e| match e {
+                PushError::Full(e) => e,
+            })?;
         }
         Ok(())
     }
 
     pub fn pop(&mut self) -> Option<Runnable> {
-        let next_task = self.next_task();
-        if let Some(next_task) = next_task.take() {
+        if let Some(next_task) = self.next_task.take() {
             Some(next_task)
         } else {
-            self.inner.pop()
+            self.popper.lock().pop().ok()
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.inner.len()
+    pub fn steal_global(&mut self, other: &GlobalQueue) {
+        if !self.pusher.is_full() {
+            let steal_cnt = other.inner.len() / 2 + 1;
+            let remaining_cap = self.pusher.slots();
+            for _ in 0..steal_cnt.min(remaining_cap) {
+                if let Some(popped) = other.pop() {
+                    self.pusher.push(popped).unwrap();
+                } else {
+                    return;
+                }
+            }
+        }
     }
 
-    #[allow(clippy::clippy::mut_from_ref)]
-    fn next_task(&self) -> &mut Option<Runnable> {
-        unsafe { &mut *self.next_task.get() }
-    }
-
-    pub fn steal_global(&self, other: &GlobalQueue) {
-        std::iter::repeat_with(|| other.inner.steal_batch(&self.inner)).find(|v| !v.is_retry());
-    }
-
-    pub fn steal_local(&self, other: &LocalQueueHandle) {
-        let _ = other.inner.steal_batch(&self.inner);
+    pub fn steal_local(&mut self, other: &LocalQueueHandle) {
+        if !self.pusher.is_full() {
+            if let Some(mut other) = other.inner.try_lock() {
+                let steal_cnt = other.slots() / 2 + 1;
+                let remaining_cap = self.pusher.slots();
+                for _ in 0..steal_cnt.min(remaining_cap) {
+                    if let Ok(popped) = other.pop() {
+                        self.pusher.push(popped).unwrap();
+                    } else {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     pub fn handle(&self) -> LocalQueueHandle {
         LocalQueueHandle {
-            inner: self.inner.stealer(),
+            inner: self.popper.clone(),
         }
     }
 }
