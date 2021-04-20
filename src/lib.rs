@@ -31,7 +31,7 @@ use std::task::{Poll, Waker};
 use async_task::Runnable;
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
-use vec_arena::Arena;
+use slab::Slab;
 
 #[doc(no_inline)]
 pub use async_task::Task;
@@ -131,10 +131,16 @@ impl<'a> Executor<'a> {
         let mut active = self.state().active.lock().unwrap();
 
         // Remove the task from the set of active tasks when the future finishes.
-        let index = active.next_vacant();
+        let index = active.vacant_entry().key();
         let state = self.state().clone();
         let future = async move {
-            let _guard = CallOnDrop(move || drop(state.active.lock().unwrap().remove(index)));
+            let _guard = CallOnDrop(move || {
+                // TODO: use try_remove once https://github.com/tokio-rs/slab/pull/89 merged
+                let mut active = state.active.lock().unwrap();
+                if active.contains(index) {
+                    drop(active.remove(index));
+                }
+            });
             future.await
         };
 
@@ -257,10 +263,8 @@ impl Drop for Executor<'_> {
     fn drop(&mut self) {
         if let Some(state) = self.state.get() {
             let mut active = state.active.lock().unwrap();
-            for i in 0..active.capacity() {
-                if let Some(w) = active.remove(i) {
-                    w.wake();
-                }
+            for w in active.drain() {
+                w.wake();
             }
             drop(active);
 
@@ -359,10 +363,16 @@ impl<'a> LocalExecutor<'a> {
         let mut active = self.inner().state().active.lock().unwrap();
 
         // Remove the task from the set of active tasks when the future finishes.
-        let index = active.next_vacant();
+        let index = active.vacant_entry().key();
         let state = self.inner().state().clone();
         let future = async move {
-            let _guard = CallOnDrop(move || drop(state.active.lock().unwrap().remove(index)));
+            let _guard = CallOnDrop(move || {
+                // TODO: use try_remove once https://github.com/tokio-rs/slab/pull/89 merged
+                let mut active = state.active.lock().unwrap();
+                if active.contains(index) {
+                    drop(active.remove(index));
+                }
+            });
             future.await
         };
 
@@ -475,7 +485,7 @@ struct State {
     sleepers: Mutex<Sleepers>,
 
     /// Currently active tasks.
-    active: Mutex<Arena<Waker>>,
+    active: Mutex<Slab<Waker>>,
 }
 
 impl State {
@@ -490,7 +500,7 @@ impl State {
                 wakers: Vec::new(),
                 free_ids: Vec::new(),
             }),
-            active: Mutex::new(Arena::new()),
+            active: Mutex::new(Slab::new()),
         }
     }
 
