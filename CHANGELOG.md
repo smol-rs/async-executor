@@ -1,3 +1,7 @@
+# Version 1.4.1
+
+- Remove dependency on deprecated `vec-arena`. (#23)
+
 # Version 1.4.0
 
 - Add `Executor::is_empty()` and `LocalExecutor::is_empty()`.
