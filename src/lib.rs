@@ -37,8 +37,8 @@ use async_task::Runnable;
 use cache_padded::CachePadded;
 use futures_lite::{future, prelude::*};
 use parking_lot::{Mutex, RwLock};
+use slab::Slab;
 use taskqueue::{GlobalQueue, LocalQueue, LocalQueueHandle};
-use vec_arena::Arena;
 
 #[doc(no_inline)]
 pub use async_task::Task;
@@ -138,10 +138,16 @@ impl<'a> Executor<'a> {
         let mut active = self.state().active.lock();
 
         // Remove the task from the set of active tasks when the future finishes.
-        let index = active.next_vacant();
+        let index = active.vacant_entry().key();
         let state = self.state().clone();
         let future = async move {
-            let _guard = CallOnDrop(move || drop(state.active.lock().remove(index)));
+            let _guard = CallOnDrop(move || {
+                // TODO: use try_remove once https://github.com/tokio-rs/slab/pull/89 merged
+                let mut active = state.active.lock();
+                if active.contains(index) {
+                    drop(active.remove(index));
+                }
+            });
             future.await
         };
 
@@ -272,10 +278,8 @@ impl Drop for Executor<'_> {
     fn drop(&mut self) {
         if let Some(state) = self.state.get() {
             let mut active = state.active.lock();
-            for i in 0..active.capacity() {
-                if let Some(w) = active.remove(i) {
-                    w.wake();
-                }
+            for w in active.drain() {
+                w.wake();
             }
             drop(active);
 
@@ -374,7 +378,7 @@ impl<'a> LocalExecutor<'a> {
         let mut active = self.inner().state().active.lock();
 
         // Remove the task from the set of active tasks when the future finishes.
-        let index = active.next_vacant();
+        let index = active.vacant_entry().key();
         let state = self.inner().state().clone();
         let future = async move {
             let _guard = CallOnDrop(move || drop(state.active.lock().remove(index)));
@@ -483,7 +487,7 @@ struct State {
     searching_count: CachePadded<AtomicUsize>,
 
     /// Local queues created by runners.
-    local_queues: CachePadded<RwLock<Arena<LocalQueueHandle>>>,
+    local_queues: CachePadded<RwLock<Slab<LocalQueueHandle>>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: CachePadded<AtomicBool>,
@@ -492,7 +496,7 @@ struct State {
     sleepers: CachePadded<Mutex<Sleepers>>,
 
     /// Currently active tasks.
-    active: CachePadded<Mutex<Arena<Waker>>>,
+    active: CachePadded<Mutex<Slab<Waker>>>,
 }
 
 impl State {
@@ -501,7 +505,7 @@ impl State {
         State {
             queue: GlobalQueue::default().into(),
             searching_count: AtomicUsize::new(0).into(),
-            local_queues: RwLock::new(Arena::new()).into(),
+            local_queues: RwLock::new(Slab::new()).into(),
             notified: AtomicBool::new(true).into(),
             sleepers: parking_lot::Mutex::new(Sleepers {
                 count: 0,
@@ -509,7 +513,7 @@ impl State {
                 free_ids: Vec::new(),
             })
             .into(),
-            active: Mutex::new(Arena::new()).into(),
+            active: Mutex::new(Slab::new()).into(),
         }
     }
 

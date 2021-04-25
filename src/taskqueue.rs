@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_task::Runnable;
 
 use concurrent_queue::ConcurrentQueue;
-use parking_lot::Mutex;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use try_mutex::TryMutex;
 
