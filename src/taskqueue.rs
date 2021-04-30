@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_task::Runnable;
 
 use concurrent_queue::ConcurrentQueue;
+use parking_lot::Mutex;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
-use try_mutex::TryMutex;
 
 #[derive(Debug)]
 pub struct GlobalQueue {
@@ -31,13 +31,13 @@ impl GlobalQueue {
 
 #[derive(Debug, Clone)]
 pub struct LocalQueueHandle {
-    inner: Arc<TryMutex<Consumer<Runnable>>>,
+    inner: Arc<Mutex<Consumer<Runnable>>>,
 }
 
 #[derive(Debug)]
 pub struct LocalQueue {
     pusher: Producer<Runnable>,
-    popper: Arc<TryMutex<Consumer<Runnable>>>,
+    popper: Arc<Mutex<Consumer<Runnable>>>,
     next_task: Option<Runnable>,
 }
 
@@ -48,7 +48,7 @@ impl Default for LocalQueue {
         let (pusher, popper) = RingBuffer::new(256).split();
         Self {
             pusher,
-            popper: Arc::new(TryMutex::new(popper)),
+            popper: Arc::new(Mutex::new(popper)),
             next_task: Default::default(),
         }
     }
@@ -73,7 +73,7 @@ impl LocalQueue {
         if let Some(next_task) = self.next_task.take() {
             Some(next_task)
         } else {
-            self.popper.try_lock()?.pop().ok()
+            self.popper.lock().pop().ok()
         }
     }
 

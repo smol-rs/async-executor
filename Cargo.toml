@@ -19,7 +19,6 @@ futures-lite = "1.11.0"
 once_cell = "1.4.1"
 parking_lot = "0.11.1"
 slab = "0.4.2"
-try-mutex="0.3"
 cache-padded="1"
 rtrb="0.1.3"
 
