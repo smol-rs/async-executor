@@ -38,7 +38,7 @@ pub struct LocalQueueHandle {
 pub struct LocalQueue {
     pusher: Producer<Runnable>,
     popper: Arc<Mutex<Consumer<Runnable>>>,
-    next_task: Option<Runnable>,
+    // next_task: Option<Runnable>,
 }
 
 unsafe impl Send for LocalQueue {}
@@ -49,7 +49,7 @@ impl Default for LocalQueue {
         Self {
             pusher,
             popper: Arc::new(Mutex::new(popper)),
-            next_task: Default::default(),
+            // next_task: Default::default(),
         }
     }
 }
@@ -57,24 +57,24 @@ impl Default for LocalQueue {
 impl LocalQueue {
     pub fn push(&mut self, is_yield: bool, task: Runnable) -> Result<(), Runnable> {
         // if this is the same task as last time, we don't push to next_task
-        if is_yield {
-            self.pusher.push(task).map_err(|e| match e {
-                PushError::Full(e) => e,
-            })?;
-        } else if let Some(task) = self.next_task.replace(task) {
-            self.pusher.push(task).map_err(|e| match e {
-                PushError::Full(e) => e,
-            })?;
-        }
+        // if is_yield {
+        self.pusher.push(task).map_err(|e| match e {
+            PushError::Full(e) => e,
+        })?;
+        // } else if let Some(task) = self.next_task.replace(task) {
+        //     self.pusher.push(task).map_err(|e| match e {
+        //         PushError::Full(e) => e,
+        //     })?;
+        // }
         Ok(())
     }
 
     pub fn pop(&mut self) -> Option<Runnable> {
-        if let Some(next_task) = self.next_task.take() {
-            Some(next_task)
-        } else {
-            self.popper.lock().pop().ok()
-        }
+        // if let Some(next_task) = self.next_task.take() {
+        //     Some(next_task)
+        // } else {
+        self.popper.lock().pop().ok()
+        // }
     }
 
     pub fn steal_global(&mut self, other: &GlobalQueue) {
