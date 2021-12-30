@@ -134,13 +134,7 @@ impl<'a> Executor<'a> {
         let index = active.vacant_entry().key();
         let state = self.state().clone();
         let future = async move {
-            let _guard = CallOnDrop(move || {
-                // TODO: use try_remove once https://github.com/tokio-rs/slab/pull/89 merged
-                let mut active = state.active.lock().unwrap();
-                if active.contains(index) {
-                    drop(active.remove(index));
-                }
-            });
+            let _guard = CallOnDrop(move || drop(state.active.lock().unwrap().try_remove(index)));
             future.await
         };
 
@@ -366,13 +360,7 @@ impl<'a> LocalExecutor<'a> {
         let index = active.vacant_entry().key();
         let state = self.inner().state().clone();
         let future = async move {
-            let _guard = CallOnDrop(move || {
-                // TODO: use try_remove once https://github.com/tokio-rs/slab/pull/89 merged
-                let mut active = state.active.lock().unwrap();
-                if active.contains(index) {
-                    drop(active.remove(index));
-                }
-            });
+            let _guard = CallOnDrop(move || drop(state.active.lock().unwrap().try_remove(index)));
             future.await
         };
 
