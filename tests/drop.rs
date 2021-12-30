@@ -11,7 +11,7 @@ use once_cell::sync::Lazy;
 #[test]
 fn executor_cancels_everything() {
     static DROP: AtomicUsize = AtomicUsize::new(0);
-    static WAKER: Lazy<Mutex<Option<Waker>>> = Lazy::new(|| Default::default());
+    static WAKER: Lazy<Mutex<Option<Waker>>> = Lazy::new(Default::default);
 
     let ex = Executor::new();
 
@@ -41,7 +41,7 @@ fn executor_cancels_everything() {
 #[test]
 fn leaked_executor_leaks_everything() {
     static DROP: AtomicUsize = AtomicUsize::new(0);
-    static WAKER: Lazy<Mutex<Option<Waker>>> = Lazy::new(|| Default::default());
+    static WAKER: Lazy<Mutex<Option<Waker>>> = Lazy::new(Default::default);
 
     let ex = Executor::new();
 

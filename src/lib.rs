@@ -447,7 +447,7 @@ impl<'a> LocalExecutor<'a> {
 
     /// Returns a reference to the inner executor.
     fn inner(&self) -> &Executor<'a> {
-        self.inner.get_or_init(|| Executor::new())
+        self.inner.get_or_init(Executor::new)
     }
 }
 
