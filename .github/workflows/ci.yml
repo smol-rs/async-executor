@@ -68,8 +68,7 @@ jobs:
         run: rustup toolchain install nightly --component miri && rustup default nightly
       - run: cargo miri test
         env:
-          # TODO: enable -Zmiri-strict-provenance once https://github.com/matklad/once_cell/pull/185 merged and released.
-          MIRIFLAGS: -Zmiri-symbolic-alignment-check -Zmiri-disable-isolation
+          MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check -Zmiri-disable-isolation
           RUSTFLAGS: ${{ env.RUSTFLAGS }} -Z randomize-layout
 
   security_audit:
