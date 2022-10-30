@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Poll, Waker};
 
+use async_lock::OnceCell;
 use async_task::Runnable;
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
@@ -63,7 +64,7 @@ pub use async_task::Task;
 #[derive(Debug)]
 pub struct Executor<'a> {
     /// The executor state.
-    state: once_cell::sync::OnceCell<Arc<State>>,
+    state: OnceCell<Arc<State>>,
 
     /// Makes the `'a` lifetime invariant.
     _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
@@ -87,7 +88,7 @@ impl<'a> Executor<'a> {
     /// ```
     pub const fn new() -> Executor<'a> {
         Executor {
-            state: once_cell::sync::OnceCell::new(),
+            state: OnceCell::new(),
             _marker: PhantomData,
         }
     }
@@ -249,7 +250,7 @@ impl<'a> Executor<'a> {
 
     /// Returns a reference to the inner state.
     fn state(&self) -> &Arc<State> {
-        self.state.get_or_init(|| Arc::new(State::new()))
+        self.state.get_or_init_blocking(|| Arc::new(State::new()))
     }
 }
 
@@ -292,7 +293,7 @@ impl<'a> Default for Executor<'a> {
 #[derive(Debug)]
 pub struct LocalExecutor<'a> {
     /// The inner executor.
-    inner: once_cell::unsync::OnceCell<Executor<'a>>,
+    inner: Executor<'a>,
 
     /// Makes the type `!Send` and `!Sync`.
     _marker: PhantomData<Rc<()>>,
@@ -313,7 +314,7 @@ impl<'a> LocalExecutor<'a> {
     /// ```
     pub const fn new() -> LocalExecutor<'a> {
         LocalExecutor {
-            inner: once_cell::unsync::OnceCell::new(),
+            inner: Executor::new(),
             _marker: PhantomData,
         }
     }
@@ -447,7 +448,7 @@ impl<'a> LocalExecutor<'a> {
 
     /// Returns a reference to the inner executor.
     fn inner(&self) -> &Executor<'a> {
-        self.inner.get_or_init(Executor::new)
+        &self.inner
     }
 }
 
