@@ -24,7 +24,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Poll, Waker};
 
@@ -235,6 +235,97 @@ impl<'a> Executor<'a> {
 
         // Run `future` and `run_forever` concurrently until `future` completes.
         future.or(run_forever).await
+    }
+
+    /// Runs the provided function without blocking the executor.
+    ///
+    /// In general, you shouldn't run blocking code inside of a future. This code will block the
+    /// executor and prevent it from running other tasks. However, sometimes you need to run
+    /// blocking code, for example, to interact with files. In this case, you can use this method
+    /// to run the blocking code without blocking the executor.
+    ///
+    /// ## Usage
+    ///
+    /// This method works by emptying the local queues held by each instance of the [`run()`] method
+    /// working on this thread and moving it back to the global queue. Since the runners don't have a
+    /// chance to steal more threads from the global queue (as the thread is running this task instead),
+    /// other available runners will be able to pick up the tasks and run them.
+    ///
+    /// This assumes that the current `Executor` is calling [`run()`] from the top level of the thread (i.e.
+    /// the executor and nothing else is driving the thread). This assumption may be violated if, for
+    /// example, the executor is running inside of another `Executor`. As that `Executor`'s `run()`
+    /// method will be unaware of this call, the blocking task will affect that executor as well.
+    /// Therefore, care should be taken in order to ensure that this method is only called from the
+    /// top level of the thread.
+    ///
+    /// [`unblock()`] does not have this caveat and instead uses a different mechanism to run the
+    /// blocking task. In general, [`unblock()`] should be preferred over this method, except when
+    /// it is not possible to use it.
+    ///
+    /// [`unblock()`]: https://docs.rs/blocking/latest/blocking/fn.unblock.html
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    /// use futures_lite::future;
+    /// use std::time::Duration;
+    ///
+    /// let ex = Executor::new();
+    ///
+    /// // Spawn a task.
+    /// let task = ex.spawn(async {
+    ///     println!("Hello world");
+    /// });
+    ///
+    /// // Run the executor.
+    /// future::block_on(ex.run(async {
+    ///     // Run a blocking task.
+    ///     ex.block_in_place(|| {
+    ///        std::thread::sleep(Duration::from_secs(1));
+    ///     });
+    ///
+    ///     // Finish the task.
+    ///     task.await;
+    /// }));
+    /// ```
+    pub fn block_in_place<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let state = self.state();
+
+        // Issue a compiler fence to allow the Relaxed atomic operations for setting
+        // the thread ID per runner to catch up.
+        fence(Ordering::SeqCst);
+
+        // Iterate over each runner and, if it's running on our thread, empty its local
+        // queue.
+        let thread_id = thread_id();
+        let runners = state.local_queues.read().unwrap();
+        let mut new_runners = false;
+
+        runners.iter().for_each(|runner| {
+            if runner.thread.load(Ordering::Acquire) == thread_id {
+                // Empty the local queue.
+                while let Ok(runnable) = runner.tasks.pop() {
+                    state.queue.push(runnable).ok();
+                    new_runners = true;
+                }
+            }
+        });
+
+        // Stop holding a lock on the local queues.
+        drop(runners);
+
+        // Notify any sleeping runners that there are new tasks.
+        if new_runners {
+            state.notify();
+        }
+
+        // There are no more pending tasks on our thread, so we can run the function without fear
+        // of blocking the executor.
+        f()
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
@@ -465,7 +556,7 @@ struct State {
     queue: ConcurrentQueue<Runnable>,
 
     /// Local queues created by runners.
-    local_queues: RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>,
+    local_queues: RwLock<Vec<Arc<LocalQueue>>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
@@ -717,7 +808,7 @@ struct Runner<'a> {
     ticker: Ticker<'a>,
 
     /// The local queue.
-    local: Arc<ConcurrentQueue<Runnable>>,
+    local: Arc<LocalQueue>,
 
     /// Bumped every time a runnable task is found.
     ticks: AtomicUsize,
@@ -729,7 +820,10 @@ impl Runner<'_> {
         let runner = Runner {
             state,
             ticker: Ticker::new(state),
-            local: Arc::new(ConcurrentQueue::bounded(512)),
+            local: Arc::new(LocalQueue {
+                tasks: ConcurrentQueue::bounded(512),
+                thread: AtomicUsize::new(thread_id()),
+            }),
             ticks: AtomicUsize::new(0),
         };
         state
@@ -742,17 +836,23 @@ impl Runner<'_> {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&self) -> Runnable {
+        // Store the current thread that is running this runner.
+        // 
+        // Relaxed ordering is fine here since a SeqCst fence is issued before the value is
+        // actually loaded.
+        self.local.thread.store(thread_id(), Ordering::Relaxed);
+
         let runnable = self
             .ticker
             .runnable_with(|| {
                 // Try the local queue.
-                if let Ok(r) = self.local.pop() {
+                if let Ok(r) = self.local.tasks.pop() {
                     return Some(r);
                 }
 
                 // Try stealing from the global queue.
                 if let Ok(r) = self.state.queue.pop() {
-                    steal(&self.state.queue, &self.local);
+                    steal(&self.state.queue, &self.local.tasks);
                     return Some(r);
                 }
 
@@ -773,8 +873,8 @@ impl Runner<'_> {
 
                 // Try stealing from each local queue in the list.
                 for local in iter {
-                    steal(local, &self.local);
-                    if let Ok(r) = self.local.pop() {
+                    steal(&local.tasks, &self.local.tasks);
+                    if let Ok(r) = self.local.tasks.pop() {
                         return Some(r);
                     }
                 }
@@ -788,7 +888,7 @@ impl Runner<'_> {
 
         if ticks % 64 == 0 {
             // Steal tasks from the global queue to ensure fair task scheduling.
-            steal(&self.state.queue, &self.local);
+            steal(&self.state.queue, &self.local.tasks);
         }
 
         runnable
@@ -805,10 +905,20 @@ impl Drop for Runner<'_> {
             .retain(|local| !Arc::ptr_eq(local, &self.local));
 
         // Re-schedule remaining tasks in the local queue.
-        while let Ok(r) = self.local.pop() {
+        while let Ok(r) = self.local.tasks.pop() {
             r.schedule();
         }
     }
+}
+
+/// A local queue contains a list of tasks that belong to a specific runner.
+#[derive(Debug)]
+struct LocalQueue {
+    /// The tasks that this runner owns.
+    tasks: ConcurrentQueue<Runnable>,
+
+    /// The thread that this task is running on.
+    thread: AtomicUsize,
 }
 
 /// Steals some items from one queue into another.
@@ -831,6 +941,23 @@ fn steal<T>(src: &ConcurrentQueue<T>, dest: &ConcurrentQueue<T>) {
             }
         }
     }
+}
+
+/// Get a value that will be unique for every thread.
+///
+/// The lowest bit is guaranteed to be clear.
+fn thread_id() -> usize {
+    // ThreadId won't work in this case, because it can't be represented as an
+    // atomic variable that we can associate with each runner.
+    //
+    // Instead, return the address of a thread local variable. We use a word so
+    // that the lowest bit is always clear.
+    thread_local! {
+        static THREAD_VARIABLE: u32 = 0xABCD;
+    }
+
+    // Note: Don't call this in destructors; otherwise, we may cause a panic.
+    THREAD_VARIABLE.with(|th| th as *const u32 as usize)
 }
 
 /// Runs a closure when dropped.
