@@ -837,7 +837,7 @@ impl Runner<'_> {
     /// Waits for the next runnable task to run.
     async fn runnable(&self) -> Runnable {
         // Store the current thread that is running this runner.
-        // 
+        //
         // Relaxed ordering is fine here since a SeqCst fence is issued before the value is
         // actually loaded.
         self.local.thread.store(thread_id(), Ordering::Relaxed);
