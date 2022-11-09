@@ -3,15 +3,13 @@ name = "async-executor"
 # When publishing a new version:
 # - Update CHANGELOG.md
 # - Create "v1.x.y" git tag
-version = "1.4.1"
+version = "1.5.0"
 authors = ["Stjepan Glavina <stjepang@gmail.com>"]
 edition = "2018"
 rust-version = "1.47"
 description = "Async executor"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/smol-rs/async-executor"
-homepage = "https://github.com/smol-rs/async-executor"
-documentation = "https://docs.rs/async-executor"
 keywords = ["asynchronous", "executor", "single", "multi", "spawn"]
 categories = ["asynchronous", "concurrency"]
 exclude = ["/.*"]
