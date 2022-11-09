@@ -1,3 +1,8 @@
+# Version 1.5.0
+
+- Remove the dependency on the `once_cell` crate to restore the MSRV. (#29)
+- Update `concurrent-queue` to v2.
+
 # Version 1.4.1
 
 - Remove dependency on deprecated `vec-arena`. (#23)
