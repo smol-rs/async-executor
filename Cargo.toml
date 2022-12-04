@@ -21,6 +21,7 @@ concurrent-queue = "2.0.0"
 fastrand = "1.3.4"
 futures-lite = "1.11.0"
 slab = "0.4.4"
+st3 = "0.4"
 
 [dev-dependencies]
 async-channel = "1.4.1"

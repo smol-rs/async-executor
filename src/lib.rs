@@ -27,6 +27,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Poll, Waker};
+use st3::lifo::{Worker, Stealer};
 
 use async_lock::OnceCell;
 use async_task::Runnable;
@@ -465,7 +466,7 @@ struct State {
     queue: ConcurrentQueue<Runnable>,
 
     /// Local queues created by runners.
-    local_queues: RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>,
+    local_queues: RwLock<Vec<Stealer<Runnable>>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
@@ -717,7 +718,7 @@ struct Runner<'a> {
     ticker: Ticker<'a>,
 
     /// The local queue.
-    local: Arc<ConcurrentQueue<Runnable>>,
+    local: Worker<Runnable>,
 
     /// Bumped every time a runnable task is found.
     ticks: AtomicUsize,
@@ -726,17 +727,18 @@ struct Runner<'a> {
 impl Runner<'_> {
     /// Creates a runner and registers it in the executor state.
     fn new(state: &State) -> Runner<'_> {
+        let worker = Worker::new(512);
         let runner = Runner {
             state,
             ticker: Ticker::new(state),
-            local: Arc::new(ConcurrentQueue::bounded(512)),
+            local: worker,
             ticks: AtomicUsize::new(0),
         };
         state
             .local_queues
             .write()
             .unwrap()
-            .push(runner.local.clone());
+            .push(runner.local.stealer());
         runner
     }
 
@@ -746,7 +748,7 @@ impl Runner<'_> {
             .ticker
             .runnable_with(|| {
                 // Try the local queue.
-                if let Ok(r) = self.local.pop() {
+                if let Some(r) = self.local.pop() {
                     return Some(r);
                 }
 
@@ -768,13 +770,10 @@ impl Runner<'_> {
                     .skip(start)
                     .take(n);
 
-                // Remove this runner's local queue.
-                let iter = iter.filter(|local| !Arc::ptr_eq(local, &self.local));
-
                 // Try stealing from each local queue in the list.
                 for local in iter {
-                    steal(local, &self.local);
-                    if let Ok(r) = self.local.pop() {
+                    let count_fn = |remaining| remaining / 2;
+                    if let Ok((r, _)) = local.steal_and_pop(&self.local, count_fn) {
                         return Some(r);
                     }
                 }
@@ -798,30 +797,26 @@ impl Runner<'_> {
 impl Drop for Runner<'_> {
     fn drop(&mut self) {
         // Remove the local queue.
-        self.state
-            .local_queues
-            .write()
-            .unwrap()
-            .retain(|local| !Arc::ptr_eq(local, &self.local));
+        // self.state
+        //     .local_queues
+        //     .write()
+        //     .unwrap()
+        //     .retain(|local| !Arc::ptr_eq(local, &self.local));
 
         // Re-schedule remaining tasks in the local queue.
-        while let Ok(r) = self.local.pop() {
+        while let Some(r) = self.local.pop() {
             r.schedule();
         }
     }
 }
 
 /// Steals some items from one queue into another.
-fn steal<T>(src: &ConcurrentQueue<T>, dest: &ConcurrentQueue<T>) {
+fn steal<T>(src: &ConcurrentQueue<T>, dest: &Worker<T>) {
     // Half of `src`'s length rounded up.
     let mut count = (src.len() + 1) / 2;
+    count = count.max(dest.spare_capacity());
 
     if count > 0 {
-        // Don't steal more than fits into the queue.
-        if let Some(cap) = dest.capacity() {
-            count = count.min(cap - dest.len());
-        }
-
         // Steal tasks.
         for _ in 0..count {
             if let Ok(t) = src.pop() {
