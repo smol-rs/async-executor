@@ -20,12 +20,13 @@
 
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 
+use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::task::{Poll, Waker};
 
 use async_lock::OnceCell;
@@ -61,7 +62,6 @@ pub use async_task::Task;
 ///         drop(signal);
 ///     }));
 /// ```
-#[derive(Debug)]
 pub struct Executor<'a> {
     /// The executor state.
     state: OnceCell<Arc<State>>,
@@ -75,6 +75,12 @@ unsafe impl Sync for Executor<'_> {}
 
 impl UnwindSafe for Executor<'_> {}
 impl RefUnwindSafe for Executor<'_> {}
+
+impl fmt::Debug for Executor<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        debug_executor(self, "Executor", f)
+    }
+}
 
 impl<'a> Executor<'a> {
     /// Creates a new executor.
@@ -290,7 +296,6 @@ impl<'a> Default for Executor<'a> {
 ///     println!("Hello world!");
 /// }));
 /// ```
-#[derive(Debug)]
 pub struct LocalExecutor<'a> {
     /// The inner executor.
     inner: Executor<'a>,
@@ -301,6 +306,12 @@ pub struct LocalExecutor<'a> {
 
 impl UnwindSafe for LocalExecutor<'_> {}
 impl RefUnwindSafe for LocalExecutor<'_> {}
+
+impl fmt::Debug for LocalExecutor<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        debug_executor(&self.inner, "LocalExecutor", f)
+    }
+}
 
 impl<'a> LocalExecutor<'a> {
     /// Creates a single-threaded executor.
@@ -459,7 +470,6 @@ impl<'a> Default for LocalExecutor<'a> {
 }
 
 /// The state of a executor.
-#[derive(Debug)]
 struct State {
     /// The global queue.
     queue: ConcurrentQueue<Runnable>,
@@ -510,7 +520,6 @@ impl State {
 }
 
 /// A list of sleeping tickers.
-#[derive(Debug)]
 struct Sleepers {
     /// Number of sleeping tickers (both notified and unnotified).
     count: usize,
@@ -587,7 +596,6 @@ impl Sleepers {
 }
 
 /// Runs task one by one.
-#[derive(Debug)]
 struct Ticker<'a> {
     /// The executor state.
     state: &'a State,
@@ -708,7 +716,6 @@ impl Drop for Ticker<'_> {
 /// A worker in a work-stealing executor.
 ///
 /// This is just a ticker that also has an associated local queue for improved cache locality.
-#[derive(Debug)]
 struct Runner<'a> {
     /// The executor state.
     state: &'a State,
@@ -831,6 +838,75 @@ fn steal<T>(src: &ConcurrentQueue<T>, dest: &ConcurrentQueue<T>) {
             }
         }
     }
+}
+
+/// Debug implementation for `Executor` and `LocalExecutor`.
+fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    // Get a reference to the state.
+    let state = match executor.state.get() {
+        Some(state) => state,
+        None => {
+            // The executor has not been initialized.
+            struct Uninitialized;
+
+            impl fmt::Debug for Uninitialized {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    f.write_str("<uninitialized>")
+                }
+            }
+
+            return f.debug_tuple(name).field(&Uninitialized).finish();
+        }
+    };
+
+    /// Debug wrapper for the number of active tasks.
+    struct ActiveTasks<'a>(&'a Mutex<Slab<Waker>>);
+
+    impl fmt::Debug for ActiveTasks<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self.0.try_lock() {
+                Ok(lock) => fmt::Debug::fmt(&lock.len(), f),
+                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
+                Err(TryLockError::Poisoned(_)) => f.write_str("<poisoned>"),
+            }
+        }
+    }
+
+    /// Debug wrapper for the local runners.
+    struct LocalRunners<'a>(&'a RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>);
+
+    impl fmt::Debug for LocalRunners<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self.0.try_read() {
+                Ok(lock) => f
+                    .debug_list()
+                    .entries(lock.iter().map(|queue| queue.len()))
+                    .finish(),
+                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
+                Err(TryLockError::Poisoned(_)) => f.write_str("<poisoned>"),
+            }
+        }
+    }
+
+    /// Debug wrapper for the sleepers.
+    struct SleepCount<'a>(&'a Mutex<Sleepers>);
+
+    impl fmt::Debug for SleepCount<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self.0.try_lock() {
+                Ok(lock) => fmt::Debug::fmt(&lock.count, f),
+                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
+                Err(TryLockError::Poisoned(_)) => f.write_str("<poisoned>"),
+            }
+        }
+    }
+
+    f.debug_struct(name)
+        .field("active", &ActiveTasks(&state.active))
+        .field("global_tasks", &state.queue.len())
+        .field("local_runners", &LocalRunners(&state.local_queues))
+        .field("sleepers", &SleepCount(&state.sleepers))
+        .finish()
 }
 
 /// Runs a closure when dropped.
