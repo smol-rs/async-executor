@@ -1,10 +1,7 @@
-#![feature(test)]
-
-extern crate test;
-
 use std::future::Future;
 
 use async_executor::Executor;
+use criterion::{criterion_group, criterion_main, Criterion};
 use futures_lite::{future, prelude::*};
 
 const TASKS: usize = 300;
@@ -23,87 +20,104 @@ fn run(f: impl FnOnce()) {
         });
 }
 
-#[bench]
-fn create(b: &mut test::Bencher) {
-    b.iter(move || {
-        let ex = Executor::new();
-        let task = ex.spawn(async {});
-        future::block_on(ex.run(task));
+fn create(c: &mut Criterion) {
+    c.bench_function("executor::create", |b| {
+        b.iter(|| {
+            let ex = Executor::new();
+            let task = ex.spawn(async {});
+            future::block_on(ex.run(task));
+        })
     });
 }
 
-#[bench]
-fn spawn_one(b: &mut test::Bencher) {
-    run(|| {
-        b.iter(move || {
-            future::block_on(async { EX.spawn(async {}).await });
-        });
-    });
-}
-
-#[bench]
-fn spawn_many(b: &mut test::Bencher) {
-    run(|| {
-        b.iter(move || {
-            future::block_on(async {
-                let mut tasks = Vec::new();
-                for _ in 0..LIGHT_TASKS {
-                    tasks.push(EX.spawn(async {}));
-                }
-                for task in tasks {
-                    task.await;
-                }
+fn spawn_one(c: &mut Criterion) {
+    c.bench_function("executor::spawn_one", |b| {
+        run(|| {
+            b.iter(|| {
+                future::block_on(async { EX.spawn(async {}).await });
             });
         });
     });
 }
 
-#[bench]
-fn spawn_recursively(b: &mut test::Bencher) {
-    fn go(i: usize) -> impl Future<Output = ()> + Send + 'static {
-        async move {
-            if i != 0 {
-                EX.spawn(async move {
-                    let fut = go(i - 1).boxed();
-                    fut.await;
-                })
-                .await;
+fn spawn_many(c: &mut Criterion) {
+    c.bench_function("executor::spawn_many_local", |b| {
+        run(|| {
+            b.iter(move || {
+                future::block_on(async {
+                    let mut tasks = Vec::new();
+                    for _ in 0..LIGHT_TASKS {
+                        tasks.push(EX.spawn(async {}));
+                    }
+                    for task in tasks {
+                        task.await;
+                    }
+                });
+            });
+        });
+    });
+}
+
+fn spawn_recursively(c: &mut Criterion) {
+    c.bench_function("executor::spawn_recursively", |b| {
+        #[allow(clippy::manual_async_fn)]
+        fn go(i: usize) -> impl Future<Output = ()> + Send + 'static {
+            async move {
+                if i != 0 {
+                    EX.spawn(async move {
+                        let fut = go(i - 1).boxed();
+                        fut.await;
+                    })
+                    .await;
+                }
             }
         }
-    }
 
-    run(|| {
-        b.iter(move || {
-            future::block_on(async {
-                let mut tasks = Vec::new();
-                for _ in 0..TASKS {
-                    tasks.push(EX.spawn(go(STEPS)));
-                }
-                for task in tasks {
-                    task.await;
-                }
+        run(|| {
+            b.iter(move || {
+                future::block_on(async {
+                    let mut tasks = Vec::new();
+                    for _ in 0..TASKS {
+                        tasks.push(EX.spawn(go(STEPS)));
+                    }
+                    for task in tasks {
+                        task.await;
+                    }
+                });
             });
         });
     });
 }
 
-#[bench]
-fn yield_now(b: &mut test::Bencher) {
-    run(|| {
-        b.iter(move || {
-            future::block_on(async {
-                let mut tasks = Vec::new();
-                for _ in 0..TASKS {
-                    tasks.push(EX.spawn(async move {
-                        for _ in 0..STEPS {
-                            future::yield_now().await;
-                        }
-                    }));
-                }
-                for task in tasks {
-                    task.await;
-                }
+fn yield_now(c: &mut Criterion) {
+    c.bench_function("executor::yield_now", |b| {
+        run(|| {
+            b.iter(move || {
+                future::block_on(async {
+                    let mut tasks = Vec::new();
+                    for _ in 0..TASKS {
+                        tasks.push(EX.spawn(async move {
+                            for _ in 0..STEPS {
+                                future::yield_now().await;
+                            }
+                        }));
+                    }
+                    for task in tasks {
+                        task.await;
+                    }
+                });
             });
         });
     });
 }
+
+criterion_group!(
+    benches,
+    create,
+    spawn_one,
+    spawn_many,
+    spawn_recursively,
+    yield_now,
+);
+
+criterion_main!(benches);
