@@ -868,8 +868,7 @@ impl LocalQueue {
                 // Store the local queue and the current waker.
                 let mut old = with_waker(|waker| {
                     LOCAL_QUEUE.with(move |slot| {
-                        let mut slot = slot.borrow_mut();
-                        slot.replace(LocalQueue {
+                        slot.borrow_mut().replace(LocalQueue {
                             queue: queue.clone(),
                             waker: waker.clone(),
                         })
@@ -881,8 +880,7 @@ impl LocalQueue {
                 let _guard = CallOnDrop(move || {
                     let old = old.take();
                     LOCAL_QUEUE.with(move |slot| {
-                        let mut slot = slot.borrow_mut();
-                        *slot = old;
+                        *slot.borrow_mut() = old;
                     });
                 });
 
@@ -919,10 +917,7 @@ impl LocalQueue {
         }
 
         LOCAL_QUEUE
-            .try_with(|local_queue| {
-                let local_queue = local_queue.borrow();
-                local_queue.as_ref().map(f)
-            })
+            .try_with(|local_queue| local_queue.borrow().as_ref().map(f))
             .ok()
             .flatten()
     }
