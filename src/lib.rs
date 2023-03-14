@@ -879,7 +879,7 @@ impl LocalQueue {
                 // Restore the old local queue on drop.
                 let _guard = CallOnDrop(move || {
                     let old = old.take();
-                    LOCAL_QUEUE.with(move |slot| {
+                    let _ = LOCAL_QUEUE.try_with(move |slot| {
                         *slot.borrow_mut() = old;
                     });
                 });
