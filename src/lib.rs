@@ -231,7 +231,7 @@ impl<'a> Executor<'a> {
         let mut rng = fastrand::Rng::new();
 
         // Set the local queue while we're running.
-        LocalQueue::set(&runner.local, {
+        LocalQueue::set(self.state(), &runner.local, {
             let runner = &runner;
             async move {
                 // A future that runs tasks forever.
@@ -262,6 +262,11 @@ impl<'a> Executor<'a> {
 
             // Try to push into the local queue.
             LocalQueue::with(|local_queue| {
+                // Make sure that we don't accidentally push to an executor that isn't ours.
+                if !std::ptr::eq(local_queue.state, &*state) {
+                    return;
+                }
+
                 if let Err(e) = local_queue.queue.push(runnable.take().unwrap()) {
                     runnable = Some(e.into_inner());
                     return;
@@ -844,6 +849,11 @@ impl Drop for Runner<'_> {
 
 /// The state of the currently running local queue.
 struct LocalQueue {
+    /// The pointer to the state of the executor.
+    ///
+    /// Used to make sure we don't push runnables to the wrong executor.
+    state: *const State,
+
     /// The concurrent queue.
     queue: Arc<ConcurrentQueue<Runnable>>,
 
@@ -861,7 +871,11 @@ impl LocalQueue {
 
         impl LocalQueue {
             /// Run a function with a set local queue.
-            async fn set<F>(queue: &Arc<ConcurrentQueue<Runnable>>, fut: F) -> F::Output
+            async fn set<F>(
+                state: &State,
+                queue: &Arc<ConcurrentQueue<Runnable>>,
+                fut: F,
+            ) -> F::Output
             where
                 F: Future,
             {
@@ -869,6 +883,7 @@ impl LocalQueue {
                 let mut old = with_waker(|waker| {
                     LOCAL_QUEUE.with(move |slot| {
                         slot.borrow_mut().replace(LocalQueue {
+                            state: state as *const State,
                             queue: queue.clone(),
                             waker: waker.clone(),
                         })
