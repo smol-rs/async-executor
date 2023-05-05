@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::thread::available_parallelism;
 
 use async_executor::Executor;
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -11,7 +12,11 @@ const LIGHT_TASKS: usize = 25_000;
 static EX: Executor<'_> = Executor::new();
 
 fn run(f: impl FnOnce(), multithread: bool) {
-    let limit = if multithread { num_cpus::get() } else { 1 };
+    let limit = if multithread {
+        available_parallelism().unwrap().get()
+    } else {
+        1
+    };
 
     let (s, r) = async_channel::bounded::<()>(1);
     easy_parallel::Parallel::new()
