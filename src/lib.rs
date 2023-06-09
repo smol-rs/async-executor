@@ -227,12 +227,13 @@ impl<'a> Executor<'a> {
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         let runner = Runner::new(self.state());
+        let mut rng = fastrand::Rng::new();
 
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
                 for _ in 0..200 {
-                    let runnable = runner.runnable().await;
+                    let runnable = runner.runnable(&mut rng).await;
                     runnable.run();
                 }
                 future::yield_now().await;
@@ -748,7 +749,7 @@ impl Runner<'_> {
     }
 
     /// Waits for the next runnable task to run.
-    async fn runnable(&self) -> Runnable {
+    async fn runnable(&self, rng: &mut fastrand::Rng) -> Runnable {
         let runnable = self
             .ticker
             .runnable_with(|| {
@@ -768,7 +769,7 @@ impl Runner<'_> {
 
                 // Pick a random starting point in the iterator list and rotate the list.
                 let n = local_queues.len();
-                let start = fastrand::usize(..n);
+                let start = rng.usize(..n);
                 let iter = local_queues
                     .iter()
                     .chain(local_queues.iter())
