@@ -269,7 +269,7 @@ impl<'a> Executor<'a> {
             // Try to push into the local queue.
             LocalQueue::with(|local_queue| {
                 // Make sure that we don't accidentally push to an executor that isn't ours.
-                if !std::ptr::eq(local_queue.state, &*state) {
+                if local_queue.state != &*state as *const State as usize {
                     return;
                 }
 
@@ -858,7 +858,7 @@ struct LocalQueue {
     /// The pointer to the state of the executor.
     ///
     /// Used to make sure we don't push runnables to the wrong executor.
-    state: *const State,
+    state: usize,
 
     /// The concurrent queue.
     queue: Arc<ConcurrentQueue<Runnable>>,
@@ -889,7 +889,7 @@ impl LocalQueue {
                 let mut old = with_waker(|waker| {
                     LOCAL_QUEUE.with(move |slot| {
                         slot.borrow_mut().replace(LocalQueue {
-                            state: state as *const State,
+                            state: state as *const State as usize,
                             queue: queue.clone(),
                             waker: waker.clone(),
                         })
@@ -1051,4 +1051,38 @@ fn with_waker<F: FnOnce(&Waker) -> R, R>(f: F) -> impl Future<Output = R> {
         let f = f.take().unwrap();
         Poll::Ready(f(cx.waker()))
     })
+}
+
+fn _ensure_send_and_sync() {
+    use futures_lite::future::pending;
+
+    fn is_send<T: Send>(_: T) {}
+    fn is_sync<T: Sync>(_: T) {}
+
+    is_send::<Executor<'_>>(Executor::new());
+    is_sync::<Executor<'_>>(Executor::new());
+
+    let ex = Executor::new();
+    is_send(ex.run(pending::<()>()));
+    is_sync(ex.run(pending::<()>()));
+    is_send(ex.tick());
+    is_sync(ex.tick());
+
+    /// ```compile_fail
+    /// use async_executor::LocalExecutor;
+    /// use futures_lite::future::pending;
+    ///
+    /// fn is_send<T: Send>(_: T) {}
+    /// fn is_sync<T: Sync>(_: T) {}
+    ///
+    /// is_send::<LocalExecutor<'_>>(LocalExecutor::new());
+    /// is_sync::<LocalExecutor<'_>>(LocalExecutor::new());
+    ///
+    /// let ex = LocalExecutor::new();
+    /// is_send(ex.run(pending::<()>()));
+    /// is_sync(ex.run(pending::<()>()));
+    /// is_send(ex.tick());
+    /// is_sync(ex.tick());
+    /// ```
+    fn _negative_test() {}
 }
