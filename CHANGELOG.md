@@ -1,3 +1,8 @@
+# Version 1.5.2
+
+- Add thread-local task queue optimizations, allowing new tasks to avoid using the global queue. (#37)
+- Update `fastrand` to v2. (#45)
+
 # Version 1.5.1
 
 - Implement a better form of debug output for Executor and LocalExecutor. (#33) 
