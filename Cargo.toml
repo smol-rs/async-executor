@@ -19,7 +19,7 @@ async-lock = "2.6"
 async-task = "4.0.0"
 concurrent-queue = "2.0.0"
 fastrand = "2.0.0"
-futures-lite = "1.11.0"
+futures-lite = { version = "1.11.0", default-features = false }
 slab = "0.4.4"
 
 [dev-dependencies]
