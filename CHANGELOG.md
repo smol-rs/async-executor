@@ -1,3 +1,8 @@
+# Version 1.5.3
+
+- Fix an accidental breaking change in v1.5.2, where `ex.run()` was no longer `Send`. (#50)
+- Remove the unused `memchr` dependency. (#51)
+
 # Version 1.5.2
 
 - Add thread-local task queue optimizations, allowing new tasks to avoid using the global queue. (#37)
