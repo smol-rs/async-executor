@@ -926,6 +926,11 @@ impl LocalQueue {
                                     Some(qaw) => qaw,
                                 };
 
+                                // If we've been replaced, just ignore the slot.
+                                if !Arc::ptr_eq(&qaw.queue, queue) {
+                                    return;
+                                }
+
                                 // Update the waker, if it has changed.
                                 if !qaw.waker.will_wake(waker) {
                                     qaw.waker = waker.clone();
