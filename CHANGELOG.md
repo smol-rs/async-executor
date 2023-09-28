@@ -1,3 +1,7 @@
+# Version 1.5.4
+
+- Fix a panic that could happen when two concurrent `run()` calls are made and the thread local task slot is left as `None`. (#55)
+
 # Version 1.5.3
 
 - Fix an accidental breaking change in v1.5.2, where `ex.run()` was no longer `Send`. (#50)
