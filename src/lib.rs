@@ -885,15 +885,16 @@ impl LocalQueue {
             where
                 F: Future,
             {
+                // Make the `LocalQueue` structure.
+                let make_local_queue = |waker: &Waker| LocalQueue {
+                    state: state as *const State as usize,
+                    queue: queue.clone(),
+                    waker: waker.clone(),
+                };
+
                 // Store the local queue and the current waker.
                 let mut old = with_waker(|waker| {
-                    LOCAL_QUEUE.with(move |slot| {
-                        slot.borrow_mut().replace(LocalQueue {
-                            state: state as *const State as usize,
-                            queue: queue.clone(),
-                            waker: waker.clone(),
-                        })
-                    })
+                    LOCAL_QUEUE.with(move |slot| slot.borrow_mut().replace(make_local_queue(waker)))
                 })
                 .await;
 
@@ -915,7 +916,15 @@ impl LocalQueue {
                             let waker = cx.waker();
                             move |slot| {
                                 let mut slot = slot.borrow_mut();
-                                let qaw = slot.as_mut().expect("missing local queue");
+                                let qaw = match slot.as_mut() {
+                                    None => {
+                                        // Another local queue dropped itself and replaced with None,
+                                        // we can take its place!
+                                        *slot = Some(make_local_queue(waker));
+                                        return;
+                                    }
+                                    Some(qaw) => qaw,
+                                };
 
                                 // If we've been replaced, just ignore the slot.
                                 if !Arc::ptr_eq(&qaw.queue, queue) {
