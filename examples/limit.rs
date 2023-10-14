@@ -67,7 +67,7 @@ impl LimitedExecutor {
                     Ordering::SeqCst,
                 ) {
                     Ok(_) => {
-                        // Wrap the future in another future that decrements the active count 
+                        // Wrap the future in another future that decrements the active count
                         // when it's done.
                         let future = {
                             let shared = self.shared.clone();
