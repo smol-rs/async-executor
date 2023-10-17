@@ -1,3 +1,7 @@
+# Version 1.6.0
+
+- Remove the thread-local queue optimization, as it caused a number of bugs in production use cases. (#61)
+
 # Version 1.5.4
 
 - Fix a panic that could happen when two concurrent `run()` calls are made and the thread local task slot is left as `None`. (#55)
