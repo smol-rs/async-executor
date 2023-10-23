@@ -24,7 +24,7 @@ slab = "0.4.4"
 
 [dev-dependencies]
 async-channel = "1.4.1"
-async-io = "1.1.9"
+async-io = "2.0.0"
 criterion = { version = "0.4.0", default-features = false, features = ["cargo_bench_support"] }
 easy-parallel = "3.1.0"
 event-listener = "3.0.0"
