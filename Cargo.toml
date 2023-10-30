@@ -15,7 +15,7 @@ categories = ["asynchronous", "concurrency"]
 exclude = ["/.*"]
 
 [dependencies]
-async-lock = "2.6"
+async-lock = "3.0"
 async-task = "4.0.0"
 concurrent-queue = "2.0.0"
 fastrand = "2.0.0"
