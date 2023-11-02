@@ -38,6 +38,7 @@ fn executor_cancels_everything() {
     assert_eq!(DROP.load(Ordering::SeqCst), 1);
 }
 
+#[cfg(not(miri))]
 #[test]
 fn leaked_executor_leaks_everything() {
     static DROP: AtomicUsize = AtomicUsize::new(0);
