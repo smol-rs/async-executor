@@ -1,3 +1,4 @@
+#[cfg(not(miri))]
 use std::mem;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicUsize, Ordering};
