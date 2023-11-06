@@ -1,3 +1,7 @@
+# Version 1.7.0
+
+- Bump `async-lock` and `futures-lite` to their latest versions. (#70)
+
 # Version 1.6.0
 
 - Remove the thread-local queue optimization, as it caused a number of bugs in production use cases. (#61)
