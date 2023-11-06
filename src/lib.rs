@@ -35,10 +35,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::task::{Poll, Waker};
 
-use once_cell::sync::OnceCell;
 use async_task::Runnable;
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
+use once_cell::sync::OnceCell;
 use slab::Slab;
 
 #[doc(no_inline)]
