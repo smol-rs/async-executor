@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::task::{Poll, Waker};
 
-use async_lock::OnceCell;
+use once_cell::sync::OnceCell;
 use async_task::Runnable;
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
@@ -263,7 +263,7 @@ impl<'a> Executor<'a> {
 
     /// Returns a reference to the inner state.
     fn state(&self) -> &Arc<State> {
-        self.state.get_or_init_blocking(|| Arc::new(State::new()))
+        self.state.get_or_init(|| Arc::new(State::new()))
     }
 }
 
