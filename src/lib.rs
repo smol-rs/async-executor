@@ -272,7 +272,7 @@ impl<'a> Executor<'a> {
         // doesn't work. Just poll the future once and panic if there is contention.
         #[cfg(target_family = "wasm")]
         future::block_on(future::poll_once(
-            self.state.get_or_init(|| Arc::new(State::new())),
+            self.state.get_or_init(|| async { Arc::new(State::new()) }),
         ))
         .expect("encountered contention on WASM")
     }
