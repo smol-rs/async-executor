@@ -1,5 +1,12 @@
 //! Async executors.
 //!
+//! This crate provides two reference executors that trade performance for
+//! functionality. They should be considered reference executors that are "good
+//! enough" for most use cases. For more specialized use cases, consider writing
+//! your own executor on top of [`async-task`].
+//!
+//! [`async-task`]: https://crates.io/crates/async-task
+//!
 //! # Examples
 //!
 //! ```
