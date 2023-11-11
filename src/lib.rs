@@ -270,7 +270,18 @@ impl<'a> Executor<'a> {
 
     /// Returns a reference to the inner state.
     fn state(&self) -> &Arc<State> {
-        self.state.get_or_init_blocking(|| Arc::new(State::new()))
+        #[cfg(not(target_family = "wasm"))]
+        {
+            return self.state.get_or_init_blocking(|| Arc::new(State::new()));
+        }
+
+        // Some projects use this on WASM for some reason. In this case get_or_init_blocking
+        // doesn't work. Just poll the future once and panic if there is contention.
+        #[cfg(target_family = "wasm")]
+        future::block_on(future::poll_once(
+            self.state.get_or_init(|| async { Arc::new(State::new()) }),
+        ))
+        .expect("encountered contention on WASM")
     }
 }
 
