@@ -1,3 +1,8 @@
+# Version 1.7.1
+
+- Fix compilation under WebAssembly targets (#75).
+- Add a disclaimer indicating that this is a reference executor (#74).
+
 # Version 1.7.0
 
 - Bump `async-lock` and `futures-lite` to their latest versions. (#70)
