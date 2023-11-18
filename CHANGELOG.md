@@ -1,3 +1,7 @@
+# Version 1.7.2
+
+- Fix compilation under WebAssembly targets (#77).
+
 # Version 1.7.1
 
 - Fix compilation under WebAssembly targets (#75).
