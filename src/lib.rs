@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::task::{Poll, Waker};
 
 use async_lock::OnceCell;
-use async_task::Runnable;
+use async_task::{Builder, Runnable};
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
 use slab::Slab;
@@ -159,7 +159,11 @@ impl<'a> Executor<'a> {
         };
 
         // Create the task and register it in the set of active tasks.
-        let (runnable, task) = unsafe { async_task::spawn_unchecked(future, self.schedule()) };
+        let (runnable, task) = unsafe {
+            Builder::new()
+                .propagate_panic(true)
+                .spawn_unchecked(|()| future, self.schedule())
+        };
         active.insert(runnable.waker());
 
         runnable.schedule();
@@ -402,7 +406,11 @@ impl<'a> LocalExecutor<'a> {
         };
 
         // Create the task and register it in the set of active tasks.
-        let (runnable, task) = unsafe { async_task::spawn_unchecked(future, self.schedule()) };
+        let (runnable, task) = unsafe {
+            Builder::new()
+                .propagate_panic(true)
+                .spawn_unchecked(|()| future, self.schedule())
+        };
         active.insert(runnable.waker());
 
         runnable.schedule();
