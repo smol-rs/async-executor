@@ -1,3 +1,8 @@
+# Version 1.8.0
+
+- When spawned tasks panic, the panic is caught and then surfaced in the spawned
+ `Task`. Previously, the panic would be surfaced in `tick()` or `run()`. (#78)
+
 # Version 1.7.2
 
 - Fix compilation under WebAssembly targets (#77).
