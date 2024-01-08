@@ -30,7 +30,7 @@ async-channel = "2.0.0"
 async-io = "2.1.0"
 criterion = { version = "0.4.0", default-features = false, features = ["cargo_bench_support"] }
 easy-parallel = "3.1.0"
-event-listener = "3.0.0"
+event-listener = "4.0.3"
 fastrand = "2.0.0"
 futures-lite = "2.0.0"
 once_cell = "1.16.0"
