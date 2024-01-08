@@ -28,9 +28,9 @@ futures-lite = { version = "2.0.0", default-features = false, features = ["std"]
 [dev-dependencies]
 async-channel = "2.0.0"
 async-io = "2.1.0"
+async-lock = "3.0.0"
 criterion = { version = "0.4.0", default-features = false, features = ["cargo_bench_support"] }
 easy-parallel = "3.1.0"
-event-listener = "3.0.0"
 fastrand = "2.0.0"
 futures-lite = "2.0.0"
 once_cell = "1.16.0"
