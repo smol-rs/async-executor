@@ -121,6 +121,20 @@ fn drop_finished_task_and_then_drop_executor() {
     assert_eq!(DROP.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn iterator_panics_mid_run() {
+    let ex = Executor::new();
+
+    let panic = std::panic::catch_unwind(|| {
+        let mut handles = vec![];
+        ex.spawn_many(
+            (0..50).map(|i| if i == 25 { panic!() } else { future::ready(i) }),
+            &mut handles,
+        )
+    });
+    assert!(panic.is_err());
+}
+
 struct CallOnDrop<F: Fn()>(F);
 
 impl<F: Fn()> Drop for CallOnDrop<F> {
