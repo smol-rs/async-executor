@@ -51,6 +51,21 @@ fn running_benches(c: &mut Criterion) {
             );
         });
 
+        group.bench_function("executor::spawn_batch", |b| {
+            run(
+                || {
+                    let mut handles = vec![];
+
+                    b.iter(|| {
+                        EX.spawn_many((0..250).map(|_| future::yield_now()), &mut handles);
+                    });
+
+                    handles.clear();
+                },
+                *multithread,
+            )
+        });
+
         group.bench_function("executor::spawn_many_local", |b| {
             run(
                 || {
