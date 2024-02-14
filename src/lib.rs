@@ -787,7 +787,7 @@ impl Runner<'_> {
 
                 // Try stealing from the global queue.
                 if let Ok(r) = self.state.queue.pop() {
-                    steal(&self.state.queue, &local_queue);
+                    steal(&self.state.queue, local_queue);
                     return Some(r);
                 }
 
@@ -804,11 +804,11 @@ impl Runner<'_> {
                     .take(n);
 
                 // Remove this runner's local queue.
-                let iter = iter.filter(|local| !core::ptr::eq(local, &local_queue));
+                let iter = iter.filter(|local| !core::ptr::eq(*local, local_queue));
 
                 // Try stealing from each local queue in the list.
                 for local in iter {
-                    steal(local, &local_queue);
+                    steal(local, local_queue);
                     if let Ok(r) = local_queue.pop() {
                         return Some(r);
                     }
@@ -823,7 +823,7 @@ impl Runner<'_> {
 
         if ticks % 64 == 0 {
             // Steal tasks from the global queue to ensure fair task scheduling.
-            steal(&self.state.queue, &local_queue);
+            steal(&self.state.queue, local_queue);
         }
 
         runnable
