@@ -780,8 +780,6 @@ impl Runner<'_> {
         let runnable = self
             .ticker
             .runnable_with(|| {
-                let local_queue = self.state.local_queues.get_or_default();
-
                 // Try the local queue.
                 if let Ok(r) = local_queue.pop() {
                     return Some(r);
