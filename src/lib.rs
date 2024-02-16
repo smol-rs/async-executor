@@ -267,8 +267,17 @@ impl<'a> Executor<'a> {
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
         let state = self.state().clone();
 
-        // TODO: If possible, push into the current local queue and notify the ticker.
-        move |runnable| {
+        move |mut runnable| {
+            //  If possible, push into the current local queue and notify the ticker.
+            let local_queue = state.local_queues.get();
+            if let Some(queue) = local_queue {
+                runnable = if let Err(err) = queue.push(runnable) {
+                    err.into_inner()
+                } else {
+                    state.notify();
+                    return;
+                }
+            }
             state.queue.push(runnable).unwrap();
             state.notify();
         }
