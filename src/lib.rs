@@ -645,10 +645,7 @@ struct Ticker<'a> {
 impl Ticker<'_> {
     /// Creates a ticker.
     fn new(state: &State) -> Ticker<'_> {
-        Ticker {
-            state,
-            sleeping: 0,
-        }
+        Ticker { state, sleeping: 0 }
     }
 
     /// Moves the ticker into sleeping and unnotified state.
@@ -661,7 +658,7 @@ impl Ticker<'_> {
             // Move to sleeping state.
             0 => {
                 self.sleeping = sleepers.insert(waker);
-            },
+            }
 
             // Already sleeping, check if notified.
             id => {
