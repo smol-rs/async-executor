@@ -151,7 +151,8 @@ impl<'a> Executor<'a> {
         let mut active = self.state().active.lock().unwrap();
 
         // Remove the task from the set of active tasks when the future finishes.
-        let index = active.vacant_entry().key();
+        let entry = active.vacant_entry();
+        let index = entry.key();
         let state = self.state().clone();
         let future = async move {
             let _guard = CallOnDrop(move || drop(state.active.lock().unwrap().try_remove(index)));
@@ -164,7 +165,7 @@ impl<'a> Executor<'a> {
                 .propagate_panic(true)
                 .spawn_unchecked(|()| future, self.schedule())
         };
-        active.insert(runnable.waker());
+        entry.insert(runnable.waker());
 
         runnable.schedule();
         task
