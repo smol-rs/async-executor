@@ -21,7 +21,7 @@ concurrent-queue = "2.0.0"
 fastrand = "2.0.0"
 futures-lite = { version = "2.0.0", default-features = false }
 slab = "0.4.4"
-thread_local = "1.0"
+thread_local = { git = "https://github.com/james7132/thread_local-rs", branch = "fix-iter-ub" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 futures-lite = { version = "2.0.0", default-features = false, features = ["std"] }
