@@ -541,7 +541,7 @@ impl State {
     fn notify(&self) {
         if self
             .notified
-            .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
             let waker = self.sleepers.lock().unwrap().notify();
