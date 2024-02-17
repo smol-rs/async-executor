@@ -543,7 +543,7 @@ impl State {
     fn notify(&self) {
         if self
             .notified
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
             let waker = self.sleepers.lock().unwrap().notify();
@@ -672,7 +672,7 @@ impl Ticker<'_> {
 
         self.state
             .notified
-            .swap(sleepers.is_notified(), Ordering::SeqCst);
+            .store(sleepers.is_notified(), Ordering::Release);
 
         true
     }
@@ -685,7 +685,7 @@ impl Ticker<'_> {
 
             self.state
                 .notified
-                .swap(sleepers.is_notified(), Ordering::SeqCst);
+                .store(sleepers.is_notified(), Ordering::Release);
         }
         self.sleeping = 0;
     }
@@ -733,7 +733,7 @@ impl Drop for Ticker<'_> {
 
             self.state
                 .notified
-                .swap(sleepers.is_notified(), Ordering::SeqCst);
+                .store(sleepers.is_notified(), Ordering::Release);
 
             // If this ticker was notified, then notify another ticker.
             if notified {
