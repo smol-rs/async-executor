@@ -1,3 +1,11 @@
+# Version 1.9.0
+
+- Re-introduce the thread-local task push optimization to the executor. (#93)
+- Bump `async-task` to v4.4.0. (#90)
+- Replace some unnecessary atomic operations with non-atomic operations. (#94)
+- Use weaker atomic orderings for notifications. (#95)
+- When spawning a future, avoid looking up the ID to assign to that future twice. (#96)
+
 # Version 1.8.0
 
 - When spawned tasks panic, the panic is caught and then surfaced in the spawned
