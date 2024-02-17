@@ -269,8 +269,7 @@ impl<'a> Executor<'a> {
 
         move |mut runnable| {
             //  If possible, push into the current local queue and notify the ticker.
-            let local_queue = state.local_queues.get();
-            if let Some(queue) = local_queue {
+            if let Some(queue) = state.local_queues.get() {
                 runnable = if let Err(err) = queue.push(runnable) {
                     err.into_inner()
                 } else {
