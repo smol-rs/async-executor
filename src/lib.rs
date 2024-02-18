@@ -707,7 +707,14 @@ impl Ticker<'_> {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&self) -> Runnable {
-        self.runnable_with(|| self.state.queue.pop().ok()).await
+        self.runnable_with(|| {
+            self.state
+                .local_queue
+                .get()
+                .and_then(|local| local.queue.pop().ok())
+                .or_else(|| self.state.queue.pop().ok())
+        })
+        .await
     }
 
     /// Waits for the next runnable task to run, given a function that searches for a task.
@@ -947,9 +954,9 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
 }
 
 /// A queue local to each thread.
-/// 
-/// It's Default implementation is used for initializing 
-/// 
+///
+/// It's Default implementation is used for initializing
+///
 /// The local queue *must* be flushed, and all pending runnables
 /// rescheduled onto the global queue when a runner is dropped.
 struct LocalQueue {
