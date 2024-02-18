@@ -268,7 +268,7 @@ impl<'a> Executor<'a> {
 
         move |mut runnable| {
             // If possible, push into the current local queue and notify the ticker.
-            if let Some(local) = state.local_queues.get() {
+            if let Some(local) = state.local_queue.get() {
                 runnable = if let Err(err) = local.queue.push(runnable) {
                     err.into_inner()
                 } else {
@@ -518,6 +518,10 @@ struct State {
     queue: ConcurrentQueue<Runnable>,
 
     /// Local queues created by runners.
+    ///
+    /// If possible, tasks are scheduled onto the local queue, and will only defer
+    /// to othe global queue when they're full, or the task is being scheduled from
+    /// a thread without a runner.
     local_queue: ThreadLocal<LocalQueue>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
@@ -943,6 +947,11 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
 }
 
 /// A queue local to each thread.
+/// 
+/// It's Default implementation is used for initializing 
+/// 
+/// The local queue *must* be flushed, and all pending runnables
+/// rescheduled onto the global queue when a runner is dropped.
 struct LocalQueue {
     queue: ConcurrentQueue<Runnable>,
 }
