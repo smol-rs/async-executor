@@ -44,6 +44,7 @@ use std::task::{Poll, Waker};
 
 use async_lock::OnceCell;
 use async_task::{Builder, Runnable};
+use atomic_waker::AtomicWaker;
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
 use slab::Slab;
@@ -273,7 +274,7 @@ impl<'a> Executor<'a> {
                 runnable = if let Err(err) = local.queue.push(runnable) {
                     err.into_inner()
                 } else {
-                    state.notify();
+                    local.waker.wake();
                     return;
                 }
             }
@@ -668,6 +669,12 @@ impl Ticker<'_> {
     ///
     /// Returns `false` if the ticker was already sleeping and unnotified.
     fn sleep(&mut self, waker: &Waker) -> bool {
+        self.state
+            .local_queue
+            .get_or_default()
+            .waker
+            .register(waker);
+
         let mut sleepers = self.state.sleepers.lock().unwrap();
 
         match self.sleeping {
@@ -959,12 +966,14 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
 /// rescheduled onto the global queue when a runner is dropped.
 struct LocalQueue {
     queue: ConcurrentQueue<Runnable>,
+    waker: AtomicWaker,
 }
 
 impl Default for LocalQueue {
     fn default() -> Self {
         Self {
             queue: ConcurrentQueue::bounded(512),
+            waker: AtomicWaker::new(),
         }
     }
 }
