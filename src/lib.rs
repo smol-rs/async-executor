@@ -36,7 +36,6 @@
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -268,15 +267,16 @@ impl<'a> Executor<'a> {
         let state = self.state().clone();
 
         move |mut runnable| {
-            //  If possible, push into the current local queue and notify the ticker.
-            if let Some(queue) = state.local_queues.get() {
-                runnable = if let Err(err) = queue.push(runnable) {
+            // If possible, push into the current local queue and notify the ticker.
+            if let Some(local) = state.local_queues.get() {
+                runnable = if let Err(err) = local.queue.push(runnable) {
                     err.into_inner()
                 } else {
                     state.notify();
                     return;
                 }
             }
+            // If the local queue is full, fallback to pushing onto the global injector queue.
             state.queue.push(runnable).unwrap();
             state.notify();
         }
@@ -518,7 +518,7 @@ struct State {
     queue: ConcurrentQueue<Runnable>,
 
     /// Local queues created by runners.
-    local_queues: ThreadLocal<LocalQueue>,
+    local_queue: ThreadLocal<LocalQueue>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
@@ -535,7 +535,7 @@ impl State {
     fn new() -> State {
         State {
             queue: ConcurrentQueue::unbounded(),
-            local_queues: ThreadLocal::new(),
+            local_queue: ThreadLocal::new(),
             notified: AtomicBool::new(true),
             sleepers: Mutex::new(Sleepers {
                 count: 0,
@@ -783,24 +783,24 @@ impl Runner<'_> {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&self, rng: &mut fastrand::Rng) -> Runnable {
-        let local_queue = self.state.local_queues.get_or_default();
+        let local = self.state.local_queue.get_or_default();
 
         let runnable = self
             .ticker
             .runnable_with(|| {
                 // Try the local queue.
-                if let Ok(r) = local_queue.pop() {
+                if let Ok(r) = local.queue.pop() {
                     return Some(r);
                 }
 
                 // Try stealing from the global queue.
                 if let Ok(r) = self.state.queue.pop() {
-                    steal(&self.state.queue, local_queue);
+                    steal(&self.state.queue, &local.queue);
                     return Some(r);
                 }
 
                 // Try stealing from other runners.
-                let local_queues = &self.state.local_queues;
+                let local_queues = &self.state.local_queue;
 
                 // Pick a random starting point in the iterator list and rotate the list.
                 let n = local_queues.iter().count();
@@ -812,12 +812,12 @@ impl Runner<'_> {
                     .take(n);
 
                 // Remove this runner's local queue.
-                let iter = iter.filter(|local| !core::ptr::eq(*local, local_queue));
+                let iter = iter.filter(|other| !core::ptr::eq(*other, local));
 
                 // Try stealing from each local queue in the list.
-                for local in iter {
-                    steal(local, local_queue);
-                    if let Ok(r) = local_queue.pop() {
+                for other in iter {
+                    steal(&other.queue, &local.queue);
+                    if let Ok(r) = local.queue.pop() {
                         return Some(r);
                     }
                 }
@@ -831,7 +831,7 @@ impl Runner<'_> {
 
         if ticks % 64 == 0 {
             // Steal tasks from the global queue to ensure fair task scheduling.
-            steal(&self.state.queue, local_queue);
+            steal(&self.state.queue, &local.queue);
         }
 
         runnable
@@ -841,11 +841,13 @@ impl Runner<'_> {
 impl Drop for Runner<'_> {
     fn drop(&mut self) {
         // Remove the local queue.
-        let local_queue = self.state.local_queues.get_or_default();
-
-        // Re-schedule remaining tasks in the local queue.
-        while let Ok(r) = local_queue.pop() {
-            r.schedule();
+        if let Some(local) = self.state.local_queue.get() {
+            // Re-schedule remaining tasks in the local queue.
+            for r in local.queue.try_iter() {
+                // Explicitly reschedule the runnable back onto the global
+                // queue to avoid rescheduling onto the local one.
+                self.state.queue.push(r).unwrap();
+            }
         }
     }
 }
@@ -940,19 +942,16 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
         .finish()
 }
 
-struct LocalQueue(ConcurrentQueue<Runnable>);
+/// A queue local to each thread.
+struct LocalQueue {
+    queue: ConcurrentQueue<Runnable>,
+}
 
 impl Default for LocalQueue {
     fn default() -> Self {
-        Self(ConcurrentQueue::bounded(512))
-    }
-}
-
-impl Deref for LocalQueue {
-    type Target = ConcurrentQueue<Runnable>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        Self {
+            queue: ConcurrentQueue::bounded(512),
+        }
     }
 }
 
