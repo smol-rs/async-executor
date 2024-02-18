@@ -923,18 +923,13 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
     }
 
     /// Debug wrapper for the local runners.
-    struct LocalRunners<'a>(&'a RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>);
+    struct LocalRunners<'a>(&'a ThreadLocal<LocalQueue>);
 
     impl fmt::Debug for LocalRunners<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self.0.try_read() {
-                Ok(lock) => f
-                    .debug_list()
-                    .entries(lock.iter().map(|queue| queue.len()))
-                    .finish(),
-                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
-                Err(TryLockError::Poisoned(_)) => f.write_str("<poisoned>"),
-            }
+            f.debug_list()
+                .entries(self.0.iter().map(|local| local.queue.len()))
+                .finish()
         }
     }
 
@@ -954,6 +949,7 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
     f.debug_struct(name)
         .field("active", &ActiveTasks(&state.active))
         .field("global_tasks", &state.queue.len())
+        .field("local_runners", &LocalRunners(&state.local_queue))
         .field("sleepers", &SleepCount(&state.sleepers))
         .finish()
 }
