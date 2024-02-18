@@ -960,7 +960,8 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
 
 /// A queue local to each thread.
 ///
-/// It's Default implementation is used for initializing
+/// It's Default implementation is used for initializing each
+/// thread's queue via `ThreadLocal::get_or_default`.
 ///
 /// The local queue *must* be flushed, and all pending runnables
 /// rescheduled onto the global queue when a runner is dropped.
