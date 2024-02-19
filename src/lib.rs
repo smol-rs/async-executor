@@ -274,7 +274,13 @@ impl<'a> Executor<'a> {
                 runnable = if let Err(err) = local.queue.push(runnable) {
                     err.into_inner()
                 } else {
-                    local.waker.wake();
+                    // Wake up this thread if it's asleep, otherwise notify another
+                    // thread to try to have the task stolen.
+                    if let Some(waker) = local.waker.take() {
+                        waker.wake();
+                    } else {
+                        state.notify();
+                    }
                     return;
                 }
             }
