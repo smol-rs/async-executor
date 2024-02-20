@@ -34,7 +34,6 @@
 )]
 
 use std::fmt;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
