@@ -530,6 +530,11 @@ struct State {
     /// If possible, tasks are scheduled onto the local queue, and will only defer
     /// to othe global queue when they're full, or the task is being scheduled from
     /// a thread without a runner.
+    ///
+    /// Note: if a runner terminates and drains its local queue, any subsequent
+    /// spawn calls from the same thread will be added to the same queue, but won't
+    /// be executed until `Executor::run` is run on the thread again, or another
+    /// thread steals the task.
     local_queue: ThreadLocal<LocalQueue>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
