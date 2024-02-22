@@ -528,7 +528,7 @@ struct State {
     /// Local queues created by runners.
     ///
     /// If possible, tasks are scheduled onto the local queue, and will only defer
-    /// to othe global queue when they're full, or the task is being scheduled from
+    /// to other global queue when they're full, or the task is being scheduled from
     /// a thread without a runner.
     ///
     /// Note: if a runner terminates and drains its local queue, any subsequent
