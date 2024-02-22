@@ -853,7 +853,7 @@ impl Runner<'_> {
             .await;
 
         // Bump the tick counter.
-        self.ticks += 1;
+        self.ticks = self.ticks.wrapping_add(1);
 
         if self.ticks % 64 == 0 {
             // Steal tasks from the global queue to ensure fair task scheduling.
