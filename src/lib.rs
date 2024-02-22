@@ -729,6 +729,15 @@ impl Ticker<'_> {
                 .get()
                 .and_then(|local| local.queue.pop().ok())
                 .or_else(|| self.state.queue.pop().ok())
+                .or_else(|| {
+                    // Try popping from each local queue in the list.
+                    for local in self.state.local_queue.iter() {
+                        if let Ok(r) = local.queue.pop() {
+                            return Some(r);
+                        }
+                    }
+                    return None;
+                })
         })
         .await
     }
