@@ -729,6 +729,15 @@ impl Ticker<'_> {
                 .get()
                 .and_then(|local| local.queue.pop().ok())
                 .or_else(|| self.state.queue.pop().ok())
+                .or_else(|| {
+                    // Try popping from each local queue in the list.
+                    for other in self.state.local_queue.iter() {
+                        if let Ok(r) = other.queue.pop() {
+                            return Some(r);
+                        }
+                    }
+                    None
+                })
         })
         .await
     }
@@ -764,6 +773,9 @@ impl Ticker<'_> {
 
 impl Drop for Ticker<'_> {
     fn drop(&mut self) {
+        if let Some(local) = self.state.local_queue.get() {
+            local.waker.take();
+        }
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         if self.sleeping != 0 {
             let mut sleepers = self.state.sleepers.lock().unwrap();
