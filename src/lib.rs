@@ -773,6 +773,9 @@ impl Ticker<'_> {
 
 impl Drop for Ticker<'_> {
     fn drop(&mut self) {
+        if let Some(local) = self.state.local_queue.get() {
+            local.waker.take();
+        }
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         if self.sleeping != 0 {
             let mut sleepers = self.state.sleepers.lock().unwrap();
