@@ -6,11 +6,15 @@ use futures_lite::prelude::*;
 
 use std::sync::Arc;
 use std::thread;
+
+#[cfg(not(miri))]
 use std::time::Duration;
 
 fn do_run<Fut: Future<Output = ()>>(mut f: impl FnMut(Arc<Executor<'static>>) -> Fut) {
     // This should not run for longer than two minutes.
+    #[cfg(not(miri))]
     let (_stop_timeout, stopper) = async_channel::bounded::<()>(1);
+    #[cfg(not(miri))]
     thread::spawn(move || {
         block_on(async move {
             let timeout = async {
@@ -86,6 +90,8 @@ fn yield_now() {
     do_run(|ex| async move { ex.spawn(future::yield_now()).await })
 }
 
+// Miri does not support timers.
+#[cfg(not(miri))]
 #[test]
 fn timer() {
     do_run(|ex| async move {
