@@ -1,3 +1,7 @@
+# Version 1.9.1
+
+- Fix a hang that occurs when running a local queue via ticking. (#104)
+
 # Version 1.9.0
 
 - Re-introduce the thread-local task push optimization to the executor. (#93)
