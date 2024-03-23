@@ -17,8 +17,8 @@ exclude = ["/.*"]
 [dependencies]
 async-lock = "3.0.0"
 async-task = "4.4.0"
+atomic-waker = "1.0"
 concurrent-queue = "2.0.0"
-event-listener = { version = "5.2.0", default-features = false, features = ["std"] }
 fastrand = "2.0.0"
 futures-lite = { version = "2.0.0", default-features = false }
 slab = "0.4.4"
