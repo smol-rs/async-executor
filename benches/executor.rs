@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::thread::available_parallelism;
 
 use async_executor::Executor;

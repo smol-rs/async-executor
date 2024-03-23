@@ -1,5 +1,6 @@
 //! An executor with task priorities.
 
+use std::future::Future;
 use std::thread;
 
 use async_executor::{Executor, Task};
