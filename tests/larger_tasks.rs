@@ -10,18 +10,22 @@ use std::time::Duration;
 
 fn do_run<Fut: Future<Output = ()>>(mut f: impl FnMut(Arc<Executor<'static>>) -> Fut) {
     // This should not run for longer than two minutes.
-    let (_stop_timeout, stopper) = async_channel::bounded::<()>(1);
-    thread::spawn(move || {
-        block_on(async move {
-            let timeout = async {
-                async_io::Timer::after(Duration::from_secs(2 * 60)).await;
-                eprintln!("test timed out after 2m");
-                std::process::exit(1)
-            };
+    #[cfg(not(miri))]
+    let _stop_timeout = {
+        let (stop_timeout, stopper) = async_channel::bounded::<()>(1);
+        thread::spawn(move || {
+            block_on(async move {
+                let timeout = async {
+                    async_io::Timer::after(Duration::from_secs(2 * 60)).await;
+                    eprintln!("test timed out after 2m");
+                    std::process::exit(1)
+                };
 
-            let _ = stopper.recv().or(timeout).await;
-        })
-    });
+                let _ = stopper.recv().or(timeout).await;
+            })
+        });
+        stop_timeout
+    };
 
     let ex = Arc::new(Executor::new());
 
