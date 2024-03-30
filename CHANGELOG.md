@@ -1,3 +1,7 @@
+# Version 1.9.1
+
+- Remove the thread-local optimization due to the bugs that it introduces. (#106)
+
 # Version 1.9.0
 
 - Re-introduce the thread-local task push optimization to the executor. (#93)
