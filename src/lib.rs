@@ -382,7 +382,8 @@ impl<'a> Executor<'a> {
         #[cold]
         fn alloc_state(atomic_ptr: &AtomicPtr<State>) -> *mut State {
             let state = Arc::new(State::new());
-            let ptr = Arc::into_raw(state).cast_mut();
+            // TODO: Switch this to use cast_mut once the MSRV can be bumped past 1.65
+            let ptr = Arc::into_raw(state) as *mut State;
             if let Err(actual) = atomic_ptr.compare_exchange(
                 std::ptr::null_mut(),
                 ptr,
