@@ -1061,7 +1061,7 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
         }
 
         return f.debug_tuple(name).field(&Uninitialized).finish();
-    };
+    }
 
     // SAFETY: If the state pointer is not null, it must have been
     // allocated properly by Arc::new and converted via Arc::into_raw
