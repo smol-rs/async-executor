@@ -1048,26 +1048,25 @@ fn steal<T>(src: &ConcurrentQueue<T>, dest: &ConcurrentQueue<T>) {
 
 /// Debug implementation for `Executor` and `LocalExecutor`.
 fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    const NULL_PTR: *mut State = std::ptr::null_mut();
     // Get a reference to the state.
-    let state = match executor.state.load(Ordering::Acquire) {
-        NULL_PTR => {
-            // The executor has not been initialized.
-            struct Uninitialized;
+    let ptr = executor.state.load(Ordering::Acquire);
+    if ptr.is_null() {
+        // The executor has not been initialized.
+        struct Uninitialized;
 
-            impl fmt::Debug for Uninitialized {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    f.write_str("<uninitialized>")
-                }
+        impl fmt::Debug for Uninitialized {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("<uninitialized>")
             }
-
-            return f.debug_tuple(name).field(&Uninitialized).finish();
         }
-        // SAFETY: If the state pointer is not null, it must have been
-        // allocated properly by Arc::new and converted via Arc::into_raw
-        // in state_ptr.
-        state => unsafe { &*state },
+
+        return f.debug_tuple(name).field(&Uninitialized).finish();
     };
+
+    // SAFETY: If the state pointer is not null, it must have been
+    // allocated properly by Arc::new and converted via Arc::into_raw
+    // in state_ptr.
+    let state = unsafe { &*ptr };
 
     /// Debug wrapper for the number of active tasks.
     struct ActiveTasks<'a>(&'a Mutex<Slab<Waker>>);
