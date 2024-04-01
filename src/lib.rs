@@ -237,7 +237,7 @@ impl<'a> Executor<'a> {
         // Remove the task from the set of active tasks when the future finishes.
         let entry = active.vacant_entry();
         let index = entry.key();
-        let state = self.state();
+        let state = self.state_as_arc();
         let future = async move {
             let _guard = CallOnDrop(move || drop(state.active.lock().unwrap().try_remove(index)));
             future.await
