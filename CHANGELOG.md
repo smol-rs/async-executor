@@ -1,3 +1,7 @@
+# Version 1.10.0
+
+- Add a function `spawn_batch` that allows users to spawn multiple tasks while only locking the executor once. (#92)
+
 # Version 1.9.1
 
 - Remove the thread-local optimization due to the bugs that it introduces. (#106)
