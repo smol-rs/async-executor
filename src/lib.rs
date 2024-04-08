@@ -427,7 +427,7 @@ impl<'a> Executor<'a> {
 
 impl Drop for Executor<'_> {
     fn drop(&mut self) {
-        let ptr = self.state.load(Ordering::Acquire);
+        let ptr = *self.state.get_mut();
         if ptr.is_null() {
             return;
         }
