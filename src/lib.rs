@@ -425,6 +425,25 @@ impl<'a> Executor<'a> {
     }
 }
 
+impl Executor<'static> {
+    /// Consumes the [`Executor`] and intentionally leaks it.
+    ///
+    /// Largely equivalent to calling `Box::leak(Box::new(executor))`, but the produced
+    /// [`LeakedExecutor`]'s functions are optimized to require fewer synchronizing operations
+    /// when spawning, running, and finishing tasks.
+    #[cfg(feature = "leak")]
+    pub fn leak(self) -> LeakedExecutor {
+        let ptr = self.state_ptr().cast();
+        std::mem::forget(self);
+        LeakedExecutor {
+            // SAFETY: So long as an Executor lives, it's state pointer will always be valid
+            // when accessed through state_ptr. This executor will live for the full 'static
+            // lifetime so this isn't an arbitrary lifetime extension.
+            state: unsafe { &*ptr },
+        }
+    }
+}
+
 impl Drop for Executor<'_> {
     fn drop(&mut self) {
         let ptr = *self.state.get_mut();
@@ -678,6 +697,191 @@ impl<'a> LocalExecutor<'a> {
 impl<'a> Default for LocalExecutor<'a> {
     fn default() -> LocalExecutor<'a> {
         LocalExecutor::new()
+    }
+}
+
+/// A leaked async [`Executor`].
+///
+/// Largely equivalent to calling `Box::leak(Box::new(executor))`, but several
+/// operations are optimized to require fewer operations when spawning, running, and
+/// finishing tasks.
+///
+/// As this type does not implement `Drop`, losing the handle to the executor or failing
+/// to consistently drive the executor with [`tick`] or [`run`] will cause the all spawned
+/// tasks to permanently leak. Any tasks at the time will not be cancelled.
+///
+/// Unlike [`Executor`], this type trivially implements both [`Clone`] and [`Copy`]>
+///
+/// This type *cannot* be converted back to a `Executor`.
+#[derive(Copy, Clone)]
+#[cfg(feature = "leak")]
+pub struct LeakedExecutor {
+    state: &'static State,
+}
+
+// SAFETY: Executor stores no thread local state that can be accessed via other thread.
+#[cfg(feature = "leak")]
+unsafe impl Send for LeakedExecutor {}
+// SAFETY: Executor internally synchronizes all of it's operations internally.
+#[cfg(feature = "leak")]
+unsafe impl Sync for LeakedExecutor {}
+
+#[cfg(feature = "leak")]
+impl UnwindSafe for LeakedExecutor {}
+#[cfg(feature = "leak")]
+impl RefUnwindSafe for LeakedExecutor {}
+
+#[cfg(feature = "leak")]
+impl fmt::Debug for LeakedExecutor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        debug_state(self.state, "Executor", f)
+    }
+}
+
+#[cfg(feature = "leak")]
+impl LeakedExecutor {
+    /// Spawns a task onto the executor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    ///
+    /// let ex = Executor::new();
+    ///
+    /// let task = ex.spawn(async {
+    ///     println!("Hello world");
+    /// });
+    /// ```
+    pub fn spawn<T: Send + 'static>(
+        &self,
+        future: impl Future<Output = T> + Send + 'static,
+    ) -> Task<T> {
+        // Create the task and register it in the set of active tasks.
+        //
+        // SAFETY:
+        //
+        // If `future` is not `Send`, this must be a `LocalExecutor` as per this
+        // function's unsafe precondition. Since `LocalExecutor` is `!Sync`,
+        // `try_tick`, `tick` and `run` can only be called from the origin
+        // thread of the `LocalExecutor`. Similarly, `spawn` can only  be called
+        // from the origin thread, ensuring that `future` and the executor share
+        // the same origin thread. The `Runnable` can be scheduled from other
+        // threads, but because of the above `Runnable` can only be called or
+        // dropped on the origin thread.
+        //
+        // `future` is `'static`.
+        //
+        // `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
+        // Therefore we do not need to worry about what is done with the
+        // `Waker`.
+        let (runnable, task) = unsafe {
+            Builder::new()
+                .propagate_panic(true)
+                .spawn_unchecked(|()| future, self.schedule())
+        };
+        runnable.schedule();
+        task
+    }
+
+    /// Attempts to run a task if at least one is scheduled.
+    ///
+    /// Running a scheduled task means simply polling its future once.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    ///
+    /// let ex = Executor::new();
+    /// assert!(!ex.try_tick()); // no tasks to run
+    ///
+    /// let task = ex.spawn(async {
+    ///     println!("Hello world");
+    /// });
+    /// assert!(ex.try_tick()); // a task was found
+    /// ```
+    pub fn try_tick(&self) -> bool {
+        match self.state.queue.pop() {
+            Err(_) => false,
+            Ok(runnable) => {
+                // Notify another ticker now to pick up where this ticker left off, just in case
+                // running the task takes a long time.
+                self.state.notify();
+
+                // Run the task.
+                runnable.run();
+                true
+            }
+        }
+    }
+
+    /// Runs a single task.
+    ///
+    /// Running a task means simply polling its future once.
+    ///
+    /// If no tasks are scheduled when this method is called, it will wait until one is scheduled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    /// use futures_lite::future;
+    ///
+    /// let ex = Executor::new();
+    ///
+    /// let task = ex.spawn(async {
+    ///     println!("Hello world");
+    /// });
+    /// future::block_on(ex.tick()); // runs the task
+    /// ```
+    pub async fn tick(&self) {
+        let runnable = Ticker::new(self.state).runnable().await;
+        runnable.run();
+    }
+
+    /// Runs the executor until the given future completes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    /// use futures_lite::future;
+    ///
+    /// let ex = Executor::new();
+    ///
+    /// let task = ex.spawn(async { 1 + 2 });
+    /// let res = future::block_on(ex.run(async { task.await * 2 }));
+    ///
+    /// assert_eq!(res, 6);
+    /// ```
+    pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
+        let mut runner = Runner::new(self.state);
+        let mut rng = fastrand::Rng::new();
+
+        // A future that runs tasks forever.
+        let run_forever = async {
+            loop {
+                for _ in 0..200 {
+                    let runnable = runner.runnable(&mut rng).await;
+                    runnable.run();
+                }
+                future::yield_now().await;
+            }
+        };
+
+        // Run `future` and `run_forever` concurrently until `future` completes.
+        future.or(run_forever).await
+    }
+
+    /// Returns a function that schedules a runnable task when it gets woken up.
+    fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
+        let state = self.state;
+        // TODO: If possible, push into the current local queue and notify the ticker.
+        move |runnable| {
+            state.queue.push(runnable).unwrap();
+            state.notify();
+        }
     }
 }
 
@@ -1068,6 +1272,11 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
     // in state_ptr.
     let state = unsafe { &*ptr };
 
+    debug_state(state, name, f)
+}
+
+/// Debug implementation for `Executor` and `LocalExecutor`.
+fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     /// Debug wrapper for the number of active tasks.
     struct ActiveTasks<'a>(&'a Mutex<Slab<Waker>>);
 
