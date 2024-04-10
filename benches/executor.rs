@@ -142,7 +142,7 @@ fn running_benches(c: &mut Criterion) {
                 }
             });
 
-            group.bench_function(format!("{}::spawn_recursively", prefix),|b| {
+            group.bench_function(format!("{}::spawn_recursively", prefix), |b| {
                 #[allow(clippy::manual_async_fn)]
                 fn go(i: usize) -> impl Future<Output = ()> + Send + 'static {
                     async move {
@@ -157,14 +157,18 @@ fn running_benches(c: &mut Criterion) {
                 }
 
                 #[allow(clippy::manual_async_fn)]
-                fn go_leaked(executor: LeakedExecutor, i: usize) -> impl Future<Output = ()> + Send + 'static {
+                fn go_leaked(
+                    executor: LeakedExecutor,
+                    i: usize,
+                ) -> impl Future<Output = ()> + Send + 'static {
                     async move {
                         if i != 0 {
-                            executor.spawn(async move {
-                                let fut = go_leaked(executor, i - 1).boxed();
-                                fut.await;
-                            })
-                            .await;
+                            executor
+                                .spawn(async move {
+                                    let fut = go_leaked(executor, i - 1).boxed();
+                                    fut.await;
+                                })
+                                .await;
                         }
                     }
                 }
@@ -185,7 +189,7 @@ fn running_benches(c: &mut Criterion) {
                                 });
                             });
                         },
-                        *multithread
+                        *multithread,
                     );
                 } else {
                     run(
@@ -228,7 +232,7 @@ fn running_benches(c: &mut Criterion) {
                                 });
                             });
                         },
-                        *multithread
+                        *multithread,
                     );
                 } else {
                     run(

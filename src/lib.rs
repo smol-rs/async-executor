@@ -433,7 +433,7 @@ impl Executor<'static> {
     /// when spawning, running, and finishing tasks.
     #[cfg(feature = "leak")]
     pub fn leak(self) -> LeakedExecutor {
-        let ptr = self.state_ptr().cast();
+        let ptr = self.state_ptr();
         std::mem::forget(self);
         LeakedExecutor {
             // SAFETY: So long as an Executor lives, it's state pointer will always be valid
@@ -753,28 +753,21 @@ impl LeakedExecutor {
     ///     println!("Hello world");
     /// });
     /// ```
-    pub fn spawn<T: Send + 'static>(
+    pub fn spawn<'a, T: Send + 'a>(
         &self,
-        future: impl Future<Output = T> + Send + 'static,
+        future: impl Future<Output = T> + Send + 'a,
     ) -> Task<T> {
         // Create the task and register it in the set of active tasks.
         //
         // SAFETY:
         //
-        // If `future` is not `Send`, this must be a `LocalExecutor` as per this
-        // function's unsafe precondition. Since `LocalExecutor` is `!Sync`,
-        // `try_tick`, `tick` and `run` can only be called from the origin
-        // thread of the `LocalExecutor`. Similarly, `spawn` can only  be called
-        // from the origin thread, ensuring that `future` and the executor share
-        // the same origin thread. The `Runnable` can be scheduled from other
-        // threads, but because of the above `Runnable` can only be called or
-        // dropped on the origin thread.
-        //
-        // `future` is `'static`.
-        //
-        // `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
-        // Therefore we do not need to worry about what is done with the
-        // `Waker`.
+        // - `future` is `Send`
+        // - `future` is not `'static`, but we make sure that the `Runnable` does
+        //    not outlive `'a`. The executor cannot be dropped, and thus the `Runnable`
+        //    must outlive 'a.
+        // - `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
+        //    Therefore we do not need to worry about what is done with the
+        //    `Waker`.
         let (runnable, task) = unsafe {
             Builder::new()
                 .propagate_panic(true)
