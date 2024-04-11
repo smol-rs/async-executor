@@ -52,7 +52,7 @@ use futures_lite::{future, prelude::*};
 use slab::Slab;
 
 #[doc(no_inline)]
-pub use async_task::Task;
+pub use async_task::{FallibleTask, Task};
 
 /// An async executor.
 ///
