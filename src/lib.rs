@@ -720,11 +720,11 @@ pub struct LeakedExecutor {
     state: &'static State,
 }
 
+#[cfg(feature = "leak")]
 // SAFETY: Executor stores no thread local state that can be accessed via other thread.
-#[cfg(feature = "leak")]
 unsafe impl Send for LeakedExecutor {}
-// SAFETY: Executor internally synchronizes all of it's operations internally.
 #[cfg(feature = "leak")]
+// SAFETY: Executor internally synchronizes all of it's operations internally.
 unsafe impl Sync for LeakedExecutor {}
 
 #[cfg(feature = "leak")]
