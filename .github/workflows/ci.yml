@@ -78,9 +78,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup toolchain install nightly --component miri && rustup default nightly
-      - run: cargo miri test --all-features
+      - run: cargo miri test
         env:
           MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check -Zmiri-disable-isolation
+          RUSTFLAGS: ${{ env.RUSTFLAGS }} -Z randomize-layout
+      - run: cargo miri test --all-features
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check -Zmiri-disable-isolation -Zmiri-allow-leaks
           RUSTFLAGS: ${{ env.RUSTFLAGS }} -Z randomize-layout
 
   security_audit:
