@@ -84,7 +84,7 @@ jobs:
           RUSTFLAGS: ${{ env.RUSTFLAGS }} -Z randomize-layout
       - run: cargo miri test --all-features
         env:
-          MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check -Zmiri-disable-isolation -Zmiri-allow-leaks
+          MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check -Zmiri-disable-isolation -Zmiri-ignore-leaks
           RUSTFLAGS: ${{ env.RUSTFLAGS }} -Z randomize-layout
 
   security_audit:
