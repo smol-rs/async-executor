@@ -702,9 +702,9 @@ impl<'a> Default for LocalExecutor<'a> {
 
 /// A leaked async [`Executor`].
 ///
-/// Largely equivalent to calling `Box::leak(Box::new(executor))`, but spawning, running, and 
+/// Largely equivalent to calling `Box::leak(Box::new(executor))`, but spawning, running, and
 /// finishing tasks are optimized with the assumption that the executor will never be `Drop`'ed.
-/// A leaked executor may require signficantly less overhead in both single-threaded and 
+/// A leaked executor may require signficantly less overhead in both single-threaded and
 /// mulitthreaded use cases.
 ///
 /// As this type does not implement `Drop`, losing the handle to the executor or failing
