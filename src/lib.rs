@@ -702,15 +702,16 @@ impl<'a> Default for LocalExecutor<'a> {
 
 /// A leaked async [`Executor`].
 ///
-/// Largely equivalent to calling `Box::leak(Box::new(executor))`, but several
-/// operations are optimized to require fewer operations when spawning, running, and
-/// finishing tasks.
+/// Largely equivalent to calling `Box::leak(Box::new(executor))`, but spawning, running, and 
+/// finishing tasks are optimized with the assumption that the executor will never be `Drop`'ed.
+/// A leaked executor may require signficantly less overhead in both single-threaded and 
+/// mulitthreaded use cases.
 ///
 /// As this type does not implement `Drop`, losing the handle to the executor or failing
 /// to consistently drive the executor with [`tick`] or [`run`] will cause the all spawned
 /// tasks to permanently leak. Any tasks at the time will not be cancelled.
 ///
-/// Unlike [`Executor`], this type trivially implements both [`Clone`] and [`Copy`]>
+/// Unlike [`Executor`], this type trivially implements both [`Clone`] and [`Copy`].
 ///
 /// This type *cannot* be converted back to a `Executor`.
 #[derive(Copy, Clone)]
@@ -747,24 +748,37 @@ impl LeakedExecutor {
     /// ```
     /// use async_executor::Executor;
     ///
-    /// let ex = Executor::new();
+    /// let ex = Executor::new().leak();
     ///
     /// let task = ex.spawn(async {
     ///     println!("Hello world");
     /// });
     /// ```
-    pub fn spawn<'a, T: Send + 'a>(
+    pub fn spawn<T: Send + 'static>(
+        &self,
+        future: impl Future<Output = T> + Send + 'static,
+    ) -> Task<T> {
+        let (runnable, task) = Builder::new()
+            .propagate_panic(true)
+            .spawn(|()| future, self.schedule());
+        runnable.schedule();
+        task
+    }
+
+    /// Spawns a non-`'static` task onto the executor.
+    ///
+    /// ## Safety
+    /// The caller must ensure that the returned task terminates
+    /// or is cancelled before the end of 'a.
+    pub unsafe fn spawn_scoped<'a, T: Send + 'static>(
         &self,
         future: impl Future<Output = T> + Send + 'a,
     ) -> Task<T> {
-        // Create the task and register it in the set of active tasks.
-        //
         // SAFETY:
         //
         // - `future` is `Send`
-        // - `future` is not `'static`, but we make sure that the `Runnable` does
-        //    not outlive `'a`. The executor cannot be dropped, and thus the `Runnable`
-        //    must outlive 'a.
+        // - `future` is not `'static`, but the caller guarantees that the
+        //    task, and thus its `Runnable` must not live longer than `'a`.
         // - `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
         //    Therefore we do not need to worry about what is done with the
         //    `Waker`.
@@ -786,7 +800,7 @@ impl LeakedExecutor {
     /// ```
     /// use async_executor::Executor;
     ///
-    /// let ex = Executor::new();
+    /// let ex = Executor::new().leak();
     /// assert!(!ex.try_tick()); // no tasks to run
     ///
     /// let task = ex.spawn(async {
@@ -821,7 +835,7 @@ impl LeakedExecutor {
     /// use async_executor::Executor;
     /// use futures_lite::future;
     ///
-    /// let ex = Executor::new();
+    /// let ex = Executor::new().leak();
     ///
     /// let task = ex.spawn(async {
     ///     println!("Hello world");
@@ -841,7 +855,7 @@ impl LeakedExecutor {
     /// use async_executor::Executor;
     /// use futures_lite::future;
     ///
-    /// let ex = Executor::new();
+    /// let ex = Executor::new().leak();
     ///
     /// let task = ex.spawn(async { 1 + 2 });
     /// let res = future::block_on(ex.run(async { task.await * 2 }));
