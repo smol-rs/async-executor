@@ -13,6 +13,21 @@ impl Executor<'static> {
     /// Largely equivalent to calling `Box::leak(Box::new(executor))`, but the produced
     /// [`LeakedExecutor`]'s functions are optimized to require fewer synchronizing operations
     /// when spawning, running, and finishing tasks.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use async_executor::Executor;
+    /// use futures_lite::future;
+    ///
+    /// let ex = Executor::new().leak();
+    ///
+    /// let task = ex.spawn(async {
+    ///     println!("Hello world");
+    /// });
+    ///
+    /// future::block_on(ex.run(task));
+    /// ```
     pub fn leak(self) -> LeakedExecutor {
         let ptr = self.state_ptr();
         // SAFETY: So long as an Executor lives, it's state pointer will always be valid
