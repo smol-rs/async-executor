@@ -735,7 +735,7 @@ impl RefUnwindSafe for LeakedExecutor {}
 #[cfg(feature = "leak")]
 impl fmt::Debug for LeakedExecutor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        debug_state(self.state, "Executor", f)
+        debug_state(self.state, "LeakedExecutor", f)
     }
 }
 
@@ -768,6 +768,7 @@ impl LeakedExecutor {
     /// Spawns a non-`'static` task onto the executor.
     ///
     /// ## Safety
+    /// 
     /// The caller must ensure that the returned task terminates
     /// or is cancelled before the end of 'a.
     pub unsafe fn spawn_scoped<'a, T: Send + 'static>(
