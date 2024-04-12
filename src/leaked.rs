@@ -24,7 +24,7 @@ impl Executor<'static> {
     }
 }
 
-/// A leaked async [`Executor`].
+/// A leaked async [`Executor`] created from [`Executor::leak`].
 ///
 /// Largely equivalent to calling `Box::leak(Box::new(executor))`, but spawning, running, and
 /// finishing tasks are optimized with the assumption that the executor will never be `Drop`'ed.
