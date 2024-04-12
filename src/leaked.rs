@@ -1,5 +1,6 @@
 use crate::{debug_state, Executor, State};
 use async_task::{Builder, Runnable, Task};
+use slab::Slab;
 use std::{
     fmt,
     future::Future,
@@ -14,13 +15,24 @@ impl Executor<'static> {
     /// when spawning, running, and finishing tasks.
     pub fn leak(self) -> LeakedExecutor {
         let ptr = self.state_ptr();
+        // SAFETY: So long as an Executor lives, it's state pointer will always be valid
+        // when accessed through state_ptr. This executor will live for the full 'static
+        // lifetime so this isn't an arbitrary lifetime extension.
+        let state = unsafe { &*ptr };
+
         std::mem::forget(self);
-        LeakedExecutor {
-            // SAFETY: So long as an Executor lives, it's state pointer will always be valid
-            // when accessed through state_ptr. This executor will live for the full 'static
-            // lifetime so this isn't an arbitrary lifetime extension.
-            state: unsafe { &*ptr },
+
+        let mut active = state.active.lock().unwrap();
+        if !active.is_empty() {
+            // Reschedule all of the active tasks.
+            for waker in active.drain() {
+                waker.wake();
+            }
+            // Overwrite to ensure that the slab is deallocated.
+            *active = Slab::new();
         }
+
+        LeakedExecutor { state }
     }
 }
 
