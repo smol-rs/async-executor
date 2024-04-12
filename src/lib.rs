@@ -55,7 +55,7 @@ use slab::Slab;
 mod leaked;
 
 #[doc(no_inline)]
-pub use async_task::Task;
+pub use async_task::{FallibleTask, Task};
 #[cfg(feature = "leak")]
 pub use leaked::*;
 
