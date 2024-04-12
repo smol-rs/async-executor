@@ -292,18 +292,7 @@ impl<'a> Executor<'a> {
     /// assert!(ex.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
-        match self.state().queue.pop() {
-            Err(_) => false,
-            Ok(runnable) => {
-                // Notify another ticker now to pick up where this ticker left off, just in case
-                // running the task takes a long time.
-                self.state().notify();
-
-                // Run the task.
-                runnable.run();
-                true
-            }
-        }
+        self.state().try_tick()
     }
 
     /// Runs a single task.
@@ -326,9 +315,7 @@ impl<'a> Executor<'a> {
     /// future::block_on(ex.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
-        let state = self.state();
-        let runnable = Ticker::new(state).runnable().await;
-        runnable.run();
+        self.state().tick().await;
     }
 
     /// Runs the executor until the given future completes.
@@ -347,22 +334,7 @@ impl<'a> Executor<'a> {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        let mut runner = Runner::new(self.state());
-        let mut rng = fastrand::Rng::new();
-
-        // A future that runs tasks forever.
-        let run_forever = async {
-            loop {
-                for _ in 0..200 {
-                    let runnable = runner.runnable(&mut rng).await;
-                    runnable.run();
-                }
-                future::yield_now().await;
-            }
-        };
-
-        // Run `future` and `run_forever` concurrently until `future` completes.
-        future.or(run_forever).await
+        self.state().run(future).await
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
@@ -768,7 +740,7 @@ impl LeakedExecutor {
     /// Spawns a non-`'static` task onto the executor.
     ///
     /// ## Safety
-    /// 
+    ///
     /// The caller must ensure that the returned task terminates
     /// or is cancelled before the end of 'a.
     pub unsafe fn spawn_scoped<'a, T: Send + 'static>(
@@ -810,18 +782,7 @@ impl LeakedExecutor {
     /// assert!(ex.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
-        match self.state.queue.pop() {
-            Err(_) => false,
-            Ok(runnable) => {
-                // Notify another ticker now to pick up where this ticker left off, just in case
-                // running the task takes a long time.
-                self.state.notify();
-
-                // Run the task.
-                runnable.run();
-                true
-            }
-        }
+        self.state.try_tick()
     }
 
     /// Runs a single task.
@@ -844,8 +805,7 @@ impl LeakedExecutor {
     /// future::block_on(ex.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
-        let runnable = Ticker::new(self.state).runnable().await;
-        runnable.run();
+        self.state.tick().await;
     }
 
     /// Runs the executor until the given future completes.
@@ -864,22 +824,7 @@ impl LeakedExecutor {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        let mut runner = Runner::new(self.state);
-        let mut rng = fastrand::Rng::new();
-
-        // A future that runs tasks forever.
-        let run_forever = async {
-            loop {
-                for _ in 0..200 {
-                    let runnable = runner.runnable(&mut rng).await;
-                    runnable.run();
-                }
-                future::yield_now().await;
-            }
-        };
-
-        // Run `future` and `run_forever` concurrently until `future` completes.
-        future.or(run_forever).await
+        self.state.run(future).await
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
@@ -940,6 +885,45 @@ impl State {
                 w.wake();
             }
         }
+    }
+
+    pub(crate) fn try_tick(&self) -> bool {
+        match self.queue.pop() {
+            Err(_) => false,
+            Ok(runnable) => {
+                // Notify another ticker now to pick up where this ticker left off, just in case
+                // running the task takes a long time.
+                self.notify();
+
+                // Run the task.
+                runnable.run();
+                true
+            }
+        }
+    }
+
+    pub(crate) async fn tick(&self) {
+        let runnable = Ticker::new(self).runnable().await;
+        runnable.run();
+    }
+
+    pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
+        let mut runner = Runner::new(self);
+        let mut rng = fastrand::Rng::new();
+
+        // A future that runs tasks forever.
+        let run_forever = async {
+            loop {
+                for _ in 0..200 {
+                    let runnable = runner.runnable(&mut rng).await;
+                    runnable.run();
+                }
+                future::yield_now().await;
+            }
+        };
+
+        // Run `future` and `run_forever` concurrently until `future` completes.
+        future.or(run_forever).await
     }
 }
 
