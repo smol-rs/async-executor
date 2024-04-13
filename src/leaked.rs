@@ -63,7 +63,7 @@ impl LocalExecutor<'static> {
     /// # Example
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     /// use futures_lite::future;
     ///
     /// let ex = LocalExecutor::new().leak();
@@ -294,7 +294,7 @@ impl StaticLocalExecutor {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     ///
     /// let ex = LocalExecutor::new().leak();
     ///
@@ -350,7 +350,7 @@ impl StaticLocalExecutor {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     ///
     /// let ex = LocalExecutor::new().leak();
     /// assert!(!ex.try_tick()); // no tasks to run
@@ -373,7 +373,7 @@ impl StaticLocalExecutor {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     /// use futures_lite::future;
     ///
     /// let ex = LocalExecutor::new().leak();
@@ -392,7 +392,7 @@ impl StaticLocalExecutor {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     /// use futures_lite::future;
     ///
     /// let ex = LocalExecutor::new().leak();
