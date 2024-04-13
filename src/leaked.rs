@@ -11,7 +11,7 @@ impl Executor<'static> {
     /// Consumes the [`Executor`] and intentionally leaks it.
     ///
     /// Largely equivalent to calling `Box::leak(Box::new(executor))`, but the produced
-    /// [`LeakedExecutor`]'s functions are optimized to require fewer synchronizing operations
+    /// [`StaticExecutor`]'s functions are optimized to require fewer synchronizing operations
     /// when spawning, running, and finishing tasks.
     ///
     /// # Example
@@ -28,7 +28,7 @@ impl Executor<'static> {
     ///
     /// future::block_on(ex.run(task));
     /// ```
-    pub fn leak(self) -> LeakedExecutor {
+    pub fn leak(self) -> StaticExecutor {
         let ptr = self.state_ptr();
         // SAFETY: So long as an Executor lives, it's state pointer will always be valid
         // when accessed through state_ptr. This executor will live for the full 'static
@@ -47,7 +47,7 @@ impl Executor<'static> {
             *active = Slab::new();
         }
 
-        LeakedExecutor { state }
+        StaticExecutor { state }
     }
 }
 
@@ -66,25 +66,25 @@ impl Executor<'static> {
 ///
 /// This type *cannot* be converted back to a `Executor`.
 #[derive(Copy, Clone)]
-pub struct LeakedExecutor {
+pub struct StaticExecutor {
     state: &'static State,
 }
 
 // SAFETY: Executor stores no thread local state that can be accessed via other thread.
-unsafe impl Send for LeakedExecutor {}
+unsafe impl Send for StaticExecutor {}
 // SAFETY: Executor internally synchronizes all of it's operations internally.
-unsafe impl Sync for LeakedExecutor {}
+unsafe impl Sync for StaticExecutor {}
 
-impl UnwindSafe for LeakedExecutor {}
-impl RefUnwindSafe for LeakedExecutor {}
+impl UnwindSafe for StaticExecutor {}
+impl RefUnwindSafe for StaticExecutor {}
 
-impl fmt::Debug for LeakedExecutor {
+impl fmt::Debug for StaticExecutor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        debug_state(self.state, "LeakedExecutor", f)
+        debug_state(self.state, "StaticExecutor", f)
     }
 }
 
-impl LeakedExecutor {
+impl StaticExecutor {
     /// Spawns a task onto the executor.
     ///
     /// # Examples
