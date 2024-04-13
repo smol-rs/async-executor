@@ -2,11 +2,11 @@ use crate::{debug_state, Executor, LocalExecutor, State};
 use async_task::{Builder, Runnable, Task};
 use slab::Slab;
 use std::{
+    cell::UnsafeCell,
     fmt,
     future::Future,
-    panic::{RefUnwindSafe, UnwindSafe},
     marker::PhantomData,
-    cell::UnsafeCell,
+    panic::{RefUnwindSafe, UnwindSafe},
 };
 
 impl Executor<'static> {
@@ -93,7 +93,10 @@ impl LocalExecutor<'static> {
             *active = Slab::new();
         }
 
-        StaticLocalExecutor { state, marker_: PhantomData }
+        StaticLocalExecutor {
+            state,
+            marker_: PhantomData,
+        }
     }
 }
 
@@ -299,10 +302,7 @@ impl StaticLocalExecutor {
     ///     println!("Hello world");
     /// });
     /// ```
-    pub fn spawn<T: 'static>(
-        &self,
-        future: impl Future<Output = T> + 'static,
-    ) -> Task<T> {
+    pub fn spawn<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> Task<T> {
         let (runnable, task) = Builder::new()
             .propagate_panic(true)
             .spawn_local(|()| future, self.schedule());
@@ -324,8 +324,8 @@ impl StaticLocalExecutor {
         //
         // - `future` is not `Send` but `StaticLocalExecutor` is `!Sync`,
         //   `try_tick`, `tick` and `run` can only be called from the origin
-        //    thread of the `StaticLocalExecutor`. Similarly, `spawn_scoped` can only 
-        //    be called from the origin thread, ensuring that `future` and the executor 
+        //    thread of the `StaticLocalExecutor`. Similarly, `spawn_scoped` can only
+        //    be called from the origin thread, ensuring that `future` and the executor
         //    share the same origin thread. The `Runnable` can be scheduled from other
         //    threads, but because of the above `Runnable` can only be called or
         //    dropped on the origin thread.

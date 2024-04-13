@@ -1,6 +1,6 @@
 use std::thread::available_parallelism;
 
-use async_executor::{Executor, LeakedExecutor};
+use async_executor::{Executor, StaticExecutor};
 use criterion::{criterion_group, criterion_main, Criterion};
 use futures_lite::{future, prelude::*};
 
@@ -26,7 +26,7 @@ fn run(f: impl FnOnce(), multithread: bool) {
         });
 }
 
-fn run_leaked(executor: LeakedExecutor, f: impl FnOnce(), multithread: bool) {
+fn run_static(executor: StaticExecutor, f: impl FnOnce(), multithread: bool) {
     let limit = if multithread {
         available_parallelism().unwrap().get()
     } else {
@@ -53,23 +53,23 @@ fn create(c: &mut Criterion) {
 }
 
 fn running_benches(c: &mut Criterion) {
-    let leaked = Executor::new().leak();
-    for with_leaked in [false, true] {
+    let static_executor = Executor::new().leak();
+    for with_static in [false, true] {
         for (group_name, multithread) in [("single_thread", false), ("multi_thread", true)].iter() {
-            let prefix = if with_leaked {
-                "leaked_executor"
+            let prefix = if with_static {
+                "static_executor"
             } else {
                 "executor"
             };
             let mut group = c.benchmark_group(group_name.to_string());
 
             group.bench_function(format!("{}::spawn_one", prefix), |b| {
-                if with_leaked {
-                    run_leaked(
-                        leaked,
+                if with_static {
+                    run_static(
+                        static_executor,
                         || {
                             b.iter(|| {
-                                future::block_on(async { leaked.spawn(async {}).await });
+                                future::block_on(async { static_executor.spawn(async {}).await });
                             });
                         },
                         *multithread,
@@ -86,7 +86,7 @@ fn running_benches(c: &mut Criterion) {
                 }
             });
 
-            if !with_leaked {
+            if !with_static {
                 group.bench_function("executor::spawn_batch", |b| {
                     run(
                         || {
@@ -104,15 +104,15 @@ fn running_benches(c: &mut Criterion) {
             }
 
             group.bench_function(format!("{}::spawn_many_local", prefix), |b| {
-                if with_leaked {
-                    run_leaked(
-                        leaked,
+                if with_static {
+                    run_static(
+                        static_executor,
                         || {
                             b.iter(move || {
                                 future::block_on(async {
                                     let mut tasks = Vec::new();
                                     for _ in 0..LIGHT_TASKS {
-                                        tasks.push(leaked.spawn(async {}));
+                                        tasks.push(static_executor.spawn(async {}));
                                     }
                                     for task in tasks {
                                         task.await;
@@ -157,15 +157,15 @@ fn running_benches(c: &mut Criterion) {
                 }
 
                 #[allow(clippy::manual_async_fn)]
-                fn go_leaked(
-                    executor: LeakedExecutor,
+                fn go_static(
+                    executor: StaticExecutor,
                     i: usize,
                 ) -> impl Future<Output = ()> + Send + 'static {
                     async move {
                         if i != 0 {
                             executor
                                 .spawn(async move {
-                                    let fut = go_leaked(executor, i - 1).boxed();
+                                    let fut = go_static(executor, i - 1).boxed();
                                     fut.await;
                                 })
                                 .await;
@@ -173,15 +173,18 @@ fn running_benches(c: &mut Criterion) {
                     }
                 }
 
-                if with_leaked {
-                    run_leaked(
-                        leaked,
+                if with_static {
+                    run_static(
+                        static_executor,
                         || {
                             b.iter(move || {
                                 future::block_on(async {
                                     let mut tasks = Vec::new();
                                     for _ in 0..TASKS {
-                                        tasks.push(leaked.spawn(go_leaked(leaked, STEPS)));
+                                        tasks.push(
+                                            static_executor
+                                                .spawn(go_static(static_executor, STEPS)),
+                                        );
                                     }
                                     for task in tasks {
                                         task.await;
@@ -212,15 +215,15 @@ fn running_benches(c: &mut Criterion) {
             });
 
             group.bench_function(format!("{}::yield_now", prefix), |b| {
-                if with_leaked {
-                    run_leaked(
-                        leaked,
+                if with_static {
+                    run_static(
+                        static_executor,
                         || {
                             b.iter(move || {
                                 future::block_on(async {
                                     let mut tasks = Vec::new();
                                     for _ in 0..TASKS {
-                                        tasks.push(leaked.spawn(async move {
+                                        tasks.push(static_executor.spawn(async move {
                                             for _ in 0..STEPS {
                                                 future::yield_now().await;
                                             }
