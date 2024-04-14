@@ -1,3 +1,9 @@
+# Version 1.11.0
+
+- Re-export the `async_task::FallibleTask` primitive. (#113)
+- Support racy initialization of the executor state. This should allow the executor to be
+  initialized on web targets without any issues. (#108)
+
 # Version 1.10.0
 
 - Add a function `spawn_batch` that allows users to spawn multiple tasks while only locking the executor once. (#92)
