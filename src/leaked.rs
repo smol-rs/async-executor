@@ -16,6 +16,9 @@ impl Executor<'static> {
     /// [`StaticExecutor`]'s functions are optimized to require fewer synchronizing operations
     /// when spawning, running, and finishing tasks.
     ///
+    /// `StaticExecutor` cannot be converted back into a `Executor`, so this operation is
+    /// irreversible without the use of unsafe.
+    ///
     /// # Example
     ///
     /// ```
@@ -30,12 +33,12 @@ impl Executor<'static> {
     ///
     /// future::block_on(ex.run(task));
     /// ```
-    pub fn leak(self) -> StaticExecutor {
+    pub fn leak(self) -> &'static StaticExecutor {
         let ptr = self.state_ptr();
         // SAFETY: So long as an Executor lives, it's state pointer will always be valid
         // when accessed through state_ptr. This executor will live for the full 'static
         // lifetime so this isn't an arbitrary lifetime extension.
-        let state = unsafe { &*ptr };
+        let state: &'static State = unsafe { &*ptr };
 
         std::mem::forget(self);
 
@@ -49,7 +52,10 @@ impl Executor<'static> {
             *active = Slab::new();
         }
 
-        StaticExecutor { state }
+        // SAFETY: StaticExecutor has the same memory layout as State as it's repr(transparent).
+        // The lifetime is not altered: 'static -> 'static.
+        let static_executor: &'static StaticExecutor = unsafe { std::mem::transmute(state) };
+        static_executor
     }
 }
 
@@ -59,6 +65,9 @@ impl LocalExecutor<'static> {
     /// Largely equivalent to calling `Box::leak(Box::new(executor))`, but the produced
     /// [`StaticLocalExecutor`]'s functions are optimized to require fewer synchronizing operations
     /// when spawning, running, and finishing tasks.
+    ///
+    /// `StaticLocalExecutor` cannot be converted back into a `Executor`, so this operation is
+    /// irreversible without the use of unsafe.
     ///
     /// # Example
     ///
@@ -74,12 +83,12 @@ impl LocalExecutor<'static> {
     ///
     /// future::block_on(ex.run(task));
     /// ```
-    pub fn leak(self) -> StaticLocalExecutor {
+    pub fn leak(self) -> &'static StaticLocalExecutor {
         let ptr = self.inner.state_ptr();
-        // SAFETY: So long as an LocalExecutor lives, it's state pointer will always be valid
+        // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be valid
         // when accessed through state_ptr. This executor will live for the full 'static
         // lifetime so this isn't an arbitrary lifetime extension.
-        let state = unsafe { &*ptr };
+        let state: &'static State = unsafe { &*ptr };
 
         std::mem::forget(self);
 
@@ -93,30 +102,29 @@ impl LocalExecutor<'static> {
             *active = Slab::new();
         }
 
-        StaticLocalExecutor {
-            state,
-            marker_: PhantomData,
-        }
+        // SAFETY: StaticLocalExecutor has the same memory layout as State as it's repr(transparent).
+        // The lifetime is not altered: 'static -> 'static.
+        let static_executor: &'static StaticLocalExecutor = unsafe { std::mem::transmute(state) };
+        static_executor
     }
 }
 
-/// A leaked async [`Executor`] created from [`Executor::leak`].
+/// A static-lifetimed async [`Executor`].
 ///
-/// Largely equivalent to calling `Box::leak(Box::new(executor))`, but spawning, running, and
-/// finishing tasks are optimized with the assumption that the executor will never be `Drop`'ed.
-/// A leaked executor may require signficantly less overhead in both single-threaded and
-/// mulitthreaded use cases.
+/// This is primarily intended to be used in [`static`] variables, or types intended to be used, or can be created in non-static
+/// contexts via [`Executor::leak`].
+///
+/// Spawning, running, and finishing tasks are optimized with the assumption that the executor will never be `Drop`'ed.
+/// A static executor may require signficantly less overhead in both single-threaded and mulitthreaded use cases.
 ///
 /// As this type does not implement `Drop`, losing the handle to the executor or failing
 /// to consistently drive the executor with [`tick`] or [`run`] will cause the all spawned
 /// tasks to permanently leak. Any tasks at the time will not be cancelled.
 ///
-/// Unlike [`Executor`], this type trivially implements both [`Clone`] and [`Copy`].
-///
-/// This type *cannot* be converted back to a `Executor`.
-#[derive(Copy, Clone)]
+/// [`static`]: https://doc.rust-lang.org/std/keyword.static.html
+#[repr(transparent)]
 pub struct StaticExecutor {
-    state: &'static State,
+    state: State,
 }
 
 // SAFETY: Executor stores no thread local state that can be accessed via other thread.
@@ -129,26 +137,44 @@ impl RefUnwindSafe for StaticExecutor {}
 
 impl fmt::Debug for StaticExecutor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        debug_state(self.state, "StaticExecutor", f)
+        debug_state(&self.state, "StaticExecutor", f)
     }
 }
 
 impl StaticExecutor {
-    /// Spawns a task onto the executor.
+    /// Creates a new StaticExecutor.
     ///
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::StaticExecutor;
     ///
-    /// let ex = Executor::new().leak();
+    /// static EXECUTOR: StaticExecutor = StaticExecutor::new();
+    /// ```
+    pub const fn new() -> Self {
+        Self {
+            state: State::new(),
+        }
+    }
+
+    /// Spawns a task onto the executor.
     ///
-    /// let task = ex.spawn(async {
+    /// Note: unlike [`Executor::spawn`], this function requires being called with a `'static`
+    /// borrow on the executor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::StaticExecutor;
+    ///
+    /// static EXECUTOR: StaticExecutor = StaticExecutor::new();
+    ///
+    /// let task = EXECUTOR.spawn(async {
     ///     println!("Hello world");
     /// });
     /// ```
     pub fn spawn<T: Send + 'static>(
-        &self,
+        &'static self,
         future: impl Future<Output = T> + Send + 'static,
     ) -> Task<T> {
         let (runnable, task) = Builder::new()
@@ -165,7 +191,7 @@ impl StaticExecutor {
     /// The caller must ensure that the returned task terminates
     /// or is cancelled before the end of 'a.
     pub unsafe fn spawn_scoped<'a, T: Send + 'static>(
-        &self,
+        &'static self,
         future: impl Future<Output = T> + Send + 'a,
     ) -> Task<T> {
         // SAFETY:
@@ -192,15 +218,17 @@ impl StaticExecutor {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::StaticExecutor;
     ///
-    /// let ex = Executor::new().leak();
-    /// assert!(!ex.try_tick()); // no tasks to run
+    /// static EXECUTOR: StaticExecutor = StaticExecutor::new();
     ///
-    /// let task = ex.spawn(async {
+    /// assert!(!EXECUTOR.try_tick()); // no tasks to run
+    ///
+    /// let task = EXECUTOR.spawn(async {
     ///     println!("Hello world");
     /// });
-    /// assert!(ex.try_tick()); // a task was found
+    ///
+    /// assert!(EXECUTOR.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
         self.state.try_tick()
@@ -215,15 +243,16 @@ impl StaticExecutor {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::StaticExecutor;
     /// use futures_lite::future;
     ///
-    /// let ex = Executor::new().leak();
+    /// static EXECUTOR: StaticExecutor = StaticExecutor::new();
     ///
-    /// let task = ex.spawn(async {
+    /// let task = EXECUTOR.spawn(async {
     ///     println!("Hello world");
     /// });
-    /// future::block_on(ex.tick()); // runs the task
+    ///
+    /// future::block_on(EXECUTOR.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
         self.state.tick().await;
@@ -234,13 +263,13 @@ impl StaticExecutor {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::StaticExecutor;
     /// use futures_lite::future;
     ///
-    /// let ex = Executor::new().leak();
+    /// static EXECUTOR: StaticExecutor = StaticExecutor::new();
     ///
-    /// let task = ex.spawn(async { 1 + 2 });
-    /// let res = future::block_on(ex.run(async { task.await * 2 }));
+    /// let task = EXECUTOR.spawn(async { 1 + 2 });
+    /// let res = future::block_on(EXECUTOR.run(async { task.await * 2 }));
     ///
     /// assert_eq!(res, 6);
     /// ```
@@ -249,8 +278,8 @@ impl StaticExecutor {
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
-        let state = self.state;
+    fn schedule(&'static self) -> impl Fn(Runnable) + Send + Sync + 'static {
+        let state: &'static State = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             state.queue.push(runnable).unwrap();
@@ -259,23 +288,28 @@ impl StaticExecutor {
     }
 }
 
-/// A leaked async [`LocalExecutor`] created from [`LocalExecutor::leak`].
+impl Default for StaticExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A static async [`LocalExecutor`] created from [`LocalExecutor::leak`].
 ///
-/// Largely equivalent to calling `Box::leak(Box::new(executor))`, but spawning, running, and
-/// finishing tasks are optimized with the assumption that the executor will never be `Drop`'ed.
-/// A leaked executor may require signficantly less overhead in both single-threaded and
-/// mulitthreaded use cases.
+/// This is primarily intended to be used in [`thread_local`] variables, or can be created in non-static
+/// contexts via [`LocalExecutor::leak`].
+///
+/// Spawning, running, and finishing tasks are optimized with the assumption that the executor will never be `Drop`'ed.
+/// A static executor may require signficantly less overhead in both single-threaded and mulitthreaded use cases.
 ///
 /// As this type does not implement `Drop`, losing the handle to the executor or failing
 /// to consistently drive the executor with [`tick`] or [`run`] will cause the all spawned
 /// tasks to permanently leak. Any tasks at the time will not be cancelled.
 ///
-/// Unlike [`LocalExecutor`], this type trivially implements both [`Clone`] and [`Copy`].
-///
-/// This type *cannot* be converted back to a `Executor`.
-#[derive(Copy, Clone)]
+/// [`thread_local]: https://doc.rust-lang.org/std/macro.thread_local.html
+#[repr(transparent)]
 pub struct StaticLocalExecutor {
-    state: &'static State,
+    state: State,
     marker_: PhantomData<UnsafeCell<()>>,
 }
 
@@ -284,12 +318,33 @@ impl RefUnwindSafe for StaticLocalExecutor {}
 
 impl fmt::Debug for StaticLocalExecutor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        debug_state(self.state, "StaticLocalExecutor", f)
+        debug_state(&self.state, "StaticLocalExecutor", f)
     }
 }
 
 impl StaticLocalExecutor {
+    /// Creates a new StaticLocalExecutor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_executor::StaticLocalExecutor;
+    ///
+    /// thread_local! {
+    ///     static EXECUTOR: StaticLocalExecutor = StaticLocalExecutor::new();
+    /// }
+    /// ```
+    pub const fn new() -> Self {
+        Self {
+            state: State::new(),
+            marker_: PhantomData,
+        }
+    }
+
     /// Spawns a task onto the executor.
+    ///
+    /// Note: unlike [`LocalExecutor::spawn`], this function requires being called with a `'static`
+    /// borrow on the executor.
     ///
     /// # Examples
     ///
@@ -302,7 +357,7 @@ impl StaticLocalExecutor {
     ///     println!("Hello world");
     /// });
     /// ```
-    pub fn spawn<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> Task<T> {
+    pub fn spawn<T: 'static>(&'static self, future: impl Future<Output = T> + 'static) -> Task<T> {
         let (runnable, task) = Builder::new()
             .propagate_panic(true)
             .spawn_local(|()| future, self.schedule());
@@ -317,7 +372,7 @@ impl StaticLocalExecutor {
     /// The caller must ensure that the returned task terminates
     /// or is cancelled before the end of 'a.
     pub unsafe fn spawn_scoped<'a, T: 'static>(
-        &self,
+        &'static self,
         future: impl Future<Output = T> + 'a,
     ) -> Task<T> {
         // SAFETY:
@@ -407,12 +462,18 @@ impl StaticLocalExecutor {
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
-        let state = self.state;
+    fn schedule(&'static self) -> impl Fn(Runnable) + Send + Sync + 'static {
+        let state: &'static State = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             state.queue.push(runnable).unwrap();
             state.notify();
         }
+    }
+}
+
+impl Default for StaticLocalExecutor {
+    fn default() -> Self {
+        Self::new()
     }
 }

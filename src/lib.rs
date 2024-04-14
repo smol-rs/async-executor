@@ -679,7 +679,7 @@ struct State {
 
 impl State {
     /// Creates state for a new executor.
-    fn new() -> State {
+    const fn new() -> State {
         State {
             queue: ConcurrentQueue::unbounded(),
             local_queues: RwLock::new(Vec::new()),
