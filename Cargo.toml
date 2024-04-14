@@ -15,7 +15,8 @@ categories = ["asynchronous", "concurrency"]
 exclude = ["/.*"]
 
 [features]
-leak = []
+# Adds support for executors optimized for use in static variables.
+static = []
 
 [dependencies]
 async-task = "4.4.0"

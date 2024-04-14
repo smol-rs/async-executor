@@ -52,13 +52,13 @@ use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
 use slab::Slab;
 
-#[cfg(feature = "leak")]
-mod leaked;
+#[cfg(feature = "static")]
+mod static_executors;
 
 #[doc(no_inline)]
 pub use async_task::{FallibleTask, Task};
-#[cfg(feature = "leak")]
-pub use leaked::*;
+#[cfg(feature = "static")]
+pub use static_executors::*;
 
 /// An async executor.
 ///
