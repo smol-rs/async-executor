@@ -54,13 +54,8 @@ fn create(c: &mut Criterion) {
 
 fn running_benches(c: &mut Criterion) {
     let static_executor = Executor::new().leak();
-    for with_static in [false, true] {
+    for (prefix, with_static) in [("static_executor", false), ("executor", true) ] {
         for (group_name, multithread) in [("single_thread", false), ("multi_thread", true)].iter() {
-            let prefix = if with_static {
-                "static_executor"
-            } else {
-                "executor"
-            };
             let mut group = c.benchmark_group(group_name.to_string());
 
             group.bench_function(format!("{}::spawn_one", prefix), |b| {
