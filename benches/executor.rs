@@ -9,6 +9,7 @@ const STEPS: usize = 300;
 const LIGHT_TASKS: usize = 25_000;
 
 static EX: Executor<'_> = Executor::new();
+static STATIC_EX: StaticExecutor = StaticExecutor::new();
 
 fn run(f: impl FnOnce(), multithread: bool) {
     let limit = if multithread {
@@ -26,7 +27,7 @@ fn run(f: impl FnOnce(), multithread: bool) {
         });
 }
 
-fn run_static(executor: StaticExecutor, f: impl FnOnce(), multithread: bool) {
+fn run_static(f: impl FnOnce(), multithread: bool) {
     let limit = if multithread {
         available_parallelism().unwrap().get()
     } else {
@@ -35,7 +36,7 @@ fn run_static(executor: StaticExecutor, f: impl FnOnce(), multithread: bool) {
 
     let (s, r) = async_channel::bounded::<()>(1);
     easy_parallel::Parallel::new()
-        .each(0..limit, |_| future::block_on(executor.run(r.recv())))
+        .each(0..limit, |_| future::block_on(STATIC_EX.run(r.recv())))
         .finish(move || {
             let _s = s;
             f()
@@ -53,18 +54,16 @@ fn create(c: &mut Criterion) {
 }
 
 fn running_benches(c: &mut Criterion) {
-    let static_executor = Executor::new().leak();
-    for (prefix, with_static) in [("static_executor", false), ("executor", true) ] {
+    for (prefix, with_static) in [("executor", false), ("static_executor", true)] {
         for (group_name, multithread) in [("single_thread", false), ("multi_thread", true)].iter() {
             let mut group = c.benchmark_group(group_name.to_string());
 
             group.bench_function(format!("{}::spawn_one", prefix), |b| {
                 if with_static {
                     run_static(
-                        static_executor,
                         || {
                             b.iter(|| {
-                                future::block_on(async { static_executor.spawn(async {}).await });
+                                future::block_on(async { STATIC_EX.spawn(async {}).await });
                             });
                         },
                         *multithread,
@@ -101,13 +100,12 @@ fn running_benches(c: &mut Criterion) {
             group.bench_function(format!("{}::spawn_many_local", prefix), |b| {
                 if with_static {
                     run_static(
-                        static_executor,
                         || {
                             b.iter(move || {
                                 future::block_on(async {
                                     let mut tasks = Vec::new();
                                     for _ in 0..LIGHT_TASKS {
-                                        tasks.push(static_executor.spawn(async {}));
+                                        tasks.push(STATIC_EX.spawn(async {}));
                                     }
                                     for task in tasks {
                                         task.await;
@@ -152,15 +150,12 @@ fn running_benches(c: &mut Criterion) {
                 }
 
                 #[allow(clippy::manual_async_fn)]
-                fn go_static(
-                    executor: StaticExecutor,
-                    i: usize,
-                ) -> impl Future<Output = ()> + Send + 'static {
+                fn go_static(i: usize) -> impl Future<Output = ()> + Send + 'static {
                     async move {
                         if i != 0 {
-                            executor
+                            STATIC_EX
                                 .spawn(async move {
-                                    let fut = go_static(executor, i - 1).boxed();
+                                    let fut = go_static(i - 1).boxed();
                                     fut.await;
                                 })
                                 .await;
@@ -170,16 +165,12 @@ fn running_benches(c: &mut Criterion) {
 
                 if with_static {
                     run_static(
-                        static_executor,
                         || {
                             b.iter(move || {
                                 future::block_on(async {
                                     let mut tasks = Vec::new();
                                     for _ in 0..TASKS {
-                                        tasks.push(
-                                            static_executor
-                                                .spawn(go_static(static_executor, STEPS)),
-                                        );
+                                        tasks.push(STATIC_EX.spawn(go_static(STEPS)));
                                     }
                                     for task in tasks {
                                         task.await;
@@ -212,13 +203,12 @@ fn running_benches(c: &mut Criterion) {
             group.bench_function(format!("{}::yield_now", prefix), |b| {
                 if with_static {
                     run_static(
-                        static_executor,
                         || {
                             b.iter(move || {
                                 future::block_on(async {
                                     let mut tasks = Vec::new();
                                     for _ in 0..TASKS {
-                                        tasks.push(static_executor.spawn(async move {
+                                        tasks.push(STATIC_EX.spawn(async move {
                                             for _ in 0..STEPS {
                                                 future::yield_now().await;
                                             }
