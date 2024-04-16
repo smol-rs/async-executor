@@ -190,7 +190,7 @@ impl StaticExecutor {
     ///
     /// The caller must ensure that the returned task terminates
     /// or is cancelled before the end of 'a.
-    pub unsafe fn spawn_scoped<'a, T: Send + 'static>(
+    pub unsafe fn spawn_scoped<'a, T: Send + 'a>(
         &'static self,
         future: impl Future<Output = T> + Send + 'a,
     ) -> Task<T> {
@@ -371,7 +371,7 @@ impl StaticLocalExecutor {
     ///
     /// The caller must ensure that the returned task terminates
     /// or is cancelled before the end of 'a.
-    pub unsafe fn spawn_scoped<'a, T: 'static>(
+    pub unsafe fn spawn_scoped<'a, T: 'a>(
         &'static self,
         future: impl Future<Output = T> + 'a,
     ) -> Task<T> {
