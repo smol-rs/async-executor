@@ -45,7 +45,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::task::{Poll, Waker};
-use st3::lifo::{Worker, Stealer};
+use st3::fifo::{Worker, Stealer};
 
 use async_task::{Builder, Runnable};
 use concurrent_queue::ConcurrentQueue;
@@ -1009,12 +1009,13 @@ impl Runner<'_> {
 
 impl Drop for Runner<'_> {
     fn drop(&mut self) {
+        let stealer_ref = self.local.stealer_ref();
         // Remove the local queue.
-        // self.state
-        //     .local_queues
-        //     .write()
-        //     .unwrap()
-        //     .retain(|local| !Arc::ptr_eq(local, &self.local));
+        self.state
+            .local_queues
+            .write()
+            .unwrap()
+            .retain(|stealer| !core::ptr::eq(stealer, stealer_ref));
 
         // Re-schedule remaining tasks in the local queue.
         while let Some(r) = self.local.pop() {
@@ -1027,16 +1028,12 @@ impl Drop for Runner<'_> {
 fn steal<T>(src: &ConcurrentQueue<T>, dest: &Worker<T>) {
     // Half of `src`'s length rounded up.
     let mut count = (src.len() + 1) / 2;
-    count = count.max(dest.spare_capacity());
+    count = count.min(dest.spare_capacity());
 
     if count > 0 {
         // Steal tasks.
-        for _ in 0..count {
-            if let Ok(t) = src.pop() {
-                assert!(dest.push(t).is_ok());
-            } else {
-                break;
-            }
+        for t in src.try_iter().take(count) {
+            assert!(dest.push(t).is_ok());
         }
     }
 }
