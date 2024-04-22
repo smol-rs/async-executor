@@ -38,6 +38,7 @@
     html_logo_url = "https://raw.githubusercontent.com/smol-rs/smol/master/assets/images/logo_fullsize_transparent.png"
 )]
 
+use st3::fifo::{Stealer, Worker};
 use std::fmt;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
@@ -45,7 +46,6 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::task::{Poll, Waker};
-use st3::fifo::{Worker, Stealer};
 
 use async_task::{Builder, Runnable};
 use concurrent_queue::ConcurrentQueue;
@@ -983,6 +983,10 @@ impl Runner<'_> {
                     .skip(start)
                     .take(n);
 
+                // Remove this runner's local queue.
+                let local_stealer = self.local.stealer_ref();
+                let iter = iter.filter(|local| !core::ptr::eq(*local, local_stealer));
+
                 // Try stealing from each local queue in the list.
                 for local in iter {
                     let count_fn = |remaining| remaining / 2;
@@ -1028,9 +1032,10 @@ impl Drop for Runner<'_> {
 fn steal<T>(src: &ConcurrentQueue<T>, dest: &Worker<T>) {
     // Half of `src`'s length rounded up.
     let mut count = (src.len() + 1) / 2;
-    count = count.min(dest.spare_capacity());
 
     if count > 0 {
+        count = count.min(dest.spare_capacity());
+
         // Steal tasks.
         for t in src.try_iter().take(count) {
             assert!(dest.push(t).is_ok());
