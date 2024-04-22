@@ -1,5 +1,5 @@
-use std::thread::available_parallelism;
 use std::mem;
+use std::thread::available_parallelism;
 
 use async_executor::Executor;
 use criterion::{criterion_group, criterion_main, Criterion};
