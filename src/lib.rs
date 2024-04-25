@@ -355,7 +355,7 @@ impl<'a> Executor<'a> {
                 .local_queues
                 .read()
                 .unwrap()
-                .get(&thread::current().id())
+                .get(&thread_id())
                 .and_then(|list| list.first())
             {
                 match local_queue.queue.push(runnable) {
@@ -1040,7 +1040,7 @@ impl Runner<'_> {
         static ID_GENERATOR: AtomicUsize = AtomicUsize::new(0);
         let runner_id = ID_GENERATOR.fetch_add(1, Ordering::SeqCst);
 
-        let origin_id = thread::current().id();
+        let origin_id = thread_id();
         let runner = Runner {
             state,
             ticker: Ticker::for_runner(state, runner_id),
@@ -1245,6 +1245,15 @@ fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Re
         .field("local_runners", &LocalRunners(&state.local_queues))
         .field("sleepers", &SleepCount(&state.sleepers))
         .finish()
+}
+
+fn thread_id() -> ThreadId {
+    thread_local! {
+        static ID: ThreadId = thread::current().id();
+    }
+
+    ID.try_with(|id| *id)
+        .unwrap_or_else(|_| thread::current().id())
 }
 
 /// Runs a closure when dropped.
