@@ -39,7 +39,6 @@
 )]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
@@ -49,6 +48,7 @@ use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::task::{Poll, Waker};
 use std::thread::{self, ThreadId};
 
+use ahash::AHashMap;
 use async_task::{Builder, Runnable};
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
@@ -693,7 +693,7 @@ struct State {
     /// Local queues created by runners.
     ///
     /// These are keyed by the thread that the runner originated in.
-    local_queues: RwLock<HashMap<ThreadId, Vec<Arc<LocalQueue>>>>,
+    local_queues: RwLock<AHashMap<ThreadId, Vec<Arc<LocalQueue>>>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
@@ -710,7 +710,7 @@ impl State {
     const fn new() -> State {
         State {
             queue: ConcurrentQueue::unbounded(),
-            local_queues: RwLock::new(HashMap::new()),
+            local_queues: RwLock::new(AHashMap::new()),
             notified: AtomicBool::new(true),
             sleepers: Mutex::new(Sleepers {
                 count: 0,
@@ -1207,7 +1207,7 @@ fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Re
     }
 
     /// Debug wrapper for the local runners.
-    struct LocalRunners<'a>(&'a RwLock<HashMap<ThreadId, Vec<Arc<LocalQueue>>>>);
+    struct LocalRunners<'a>(&'a RwLock<AHashMap<ThreadId, Vec<Arc<LocalQueue>>>>);
 
     impl fmt::Debug for LocalRunners<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
