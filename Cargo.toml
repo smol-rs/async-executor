@@ -20,7 +20,7 @@ static = []
 
 [dependencies]
 async-task = "4.4.0"
-concurrent-queue = { git = "https://github.com/smol-rs/concurrent-queue", branch = "master" }
+concurrent-queue = "2.5.0"
 fastrand = "2.0.0"
 futures-lite = { version = "2.0.0", default-features = false }
 slab = "0.4.4"
