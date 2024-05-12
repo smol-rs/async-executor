@@ -37,6 +37,7 @@
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/smol-rs/smol/master/assets/images/logo_fullsize_transparent.png"
 )]
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -51,8 +52,13 @@ use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
 use slab::Slab;
 
+#[cfg(feature = "static")]
+mod static_executors;
+
 #[doc(no_inline)]
 pub use async_task::{FallibleTask, Task};
+#[cfg(feature = "static")]
+pub use static_executors::*;
 
 /// An async executor.
 ///
@@ -292,18 +298,7 @@ impl<'a> Executor<'a> {
     /// assert!(ex.try_tick()); // a task was found
     /// ```
     pub fn try_tick(&self) -> bool {
-        match self.state().queue.pop() {
-            Err(_) => false,
-            Ok(runnable) => {
-                // Notify another ticker now to pick up where this ticker left off, just in case
-                // running the task takes a long time.
-                self.state().notify();
-
-                // Run the task.
-                runnable.run();
-                true
-            }
-        }
+        self.state().try_tick()
     }
 
     /// Runs a single task.
@@ -326,9 +321,7 @@ impl<'a> Executor<'a> {
     /// future::block_on(ex.tick()); // runs the task
     /// ```
     pub async fn tick(&self) {
-        let state = self.state();
-        let runnable = Ticker::new(state).runnable().await;
-        runnable.run();
+        self.state().tick().await;
     }
 
     /// Runs the executor until the given future completes.
@@ -347,22 +340,7 @@ impl<'a> Executor<'a> {
     /// assert_eq!(res, 6);
     /// ```
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        let mut runner = Runner::new(self.state());
-        let mut rng = fastrand::Rng::new();
-
-        // A future that runs tasks forever.
-        let run_forever = async {
-            loop {
-                for _ in 0..200 {
-                    let runnable = runner.runnable(&mut rng).await;
-                    runnable.run();
-                }
-                future::yield_now().await;
-            }
-        };
-
-        // Run `future` and `run_forever` concurrently until `future` completes.
-        future.or(run_forever).await
+        self.state().run(future).await
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
@@ -701,7 +679,7 @@ struct State {
 
 impl State {
     /// Creates state for a new executor.
-    fn new() -> State {
+    const fn new() -> State {
         State {
             queue: ConcurrentQueue::unbounded(),
             local_queues: RwLock::new(Vec::new()),
@@ -728,6 +706,45 @@ impl State {
                 w.wake();
             }
         }
+    }
+
+    pub(crate) fn try_tick(&self) -> bool {
+        match self.queue.pop() {
+            Err(_) => false,
+            Ok(runnable) => {
+                // Notify another ticker now to pick up where this ticker left off, just in case
+                // running the task takes a long time.
+                self.notify();
+
+                // Run the task.
+                runnable.run();
+                true
+            }
+        }
+    }
+
+    pub(crate) async fn tick(&self) {
+        let runnable = Ticker::new(self).runnable().await;
+        runnable.run();
+    }
+
+    pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
+        let mut runner = Runner::new(self);
+        let mut rng = fastrand::Rng::new();
+
+        // A future that runs tasks forever.
+        let run_forever = async {
+            loop {
+                for _ in 0..200 {
+                    let runnable = runner.runnable(&mut rng).await;
+                    runnable.run();
+                }
+                future::yield_now().await;
+            }
+        };
+
+        // Run `future` and `run_forever` concurrently until `future` completes.
+        future.or(run_forever).await
     }
 }
 
@@ -1068,6 +1085,11 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
     // in state_ptr.
     let state = unsafe { &*ptr };
 
+    debug_state(state, name, f)
+}
+
+/// Debug implementation for `Executor` and `LocalExecutor`.
+fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     /// Debug wrapper for the number of active tasks.
     struct ActiveTasks<'a>(&'a Mutex<Slab<Waker>>);
 
