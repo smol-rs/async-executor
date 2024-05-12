@@ -1,3 +1,8 @@
+# Version 1.12.0
+
+- Add static executors, which are an optimization over executors that are kept
+  around forever. (#112)
+
 # Version 1.11.0
 
 - Re-export the `async_task::FallibleTask` primitive. (#113)
@@ -58,7 +63,7 @@
 
 # Version 1.5.1
 
-- Implement a better form of debug output for Executor and LocalExecutor. (#33) 
+- Implement a better form of debug output for Executor and LocalExecutor. (#33)
 
 # Version 1.5.0
 
