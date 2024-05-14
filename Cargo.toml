@@ -19,7 +19,6 @@ exclude = ["/.*"]
 static = []
 
 [dependencies]
-ahash = "0.8.11"
 async-task = "4.4.0"
 concurrent-queue = "2.5.0"
 fastrand = "2.0.0"
