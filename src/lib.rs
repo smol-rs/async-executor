@@ -563,7 +563,7 @@ impl<'a> LocalExecutor<'a> {
     ///
     /// [`spawn`]: LocalExecutor::spawn
     /// [`Executor::spawn_many`]: Executor::spawn_many
-    pub fn spawn_many<T: Send + 'a, F: Future<Output = T> + Send + 'a>(
+    pub fn spawn_many<T: 'a, F: Future<Output = T> + 'a>(
         &self,
         futures: impl IntoIterator<Item = F>,
         handles: &mut impl Extend<Task<F::Output>>,
