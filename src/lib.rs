@@ -58,6 +58,7 @@ mod static_executors;
 #[doc(no_inline)]
 pub use async_task::{FallibleTask, Task};
 #[cfg(feature = "static")]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "static"))))]
 pub use static_executors::*;
 
 /// An async executor.
