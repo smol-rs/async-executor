@@ -118,8 +118,9 @@ impl LocalExecutor<'static> {
 /// A static executor may require signficantly less overhead in both single-threaded and mulitthreaded use cases.
 ///
 /// As this type does not implement `Drop`, losing the handle to the executor or failing
-/// to consistently drive the executor with [`tick`] or [`run`] will cause the all spawned
-/// tasks to permanently leak. Any tasks at the time will not be cancelled.
+/// to consistently drive the executor with [`StaticExecutor::tick`] or
+/// [`StaticExecutor::run`] will cause the all spawned tasks to permanently leak. Any
+/// tasks at the time will not be cancelled.
 ///
 /// [`static`]: https://doc.rust-lang.org/std/keyword.static.html
 #[repr(transparent)]
@@ -303,8 +304,9 @@ impl Default for StaticExecutor {
 /// A static executor may require signficantly less overhead in both single-threaded and mulitthreaded use cases.
 ///
 /// As this type does not implement `Drop`, losing the handle to the executor or failing
-/// to consistently drive the executor with [`tick`] or [`run`] will cause the all spawned
-/// tasks to permanently leak. Any tasks at the time will not be cancelled.
+/// to consistently drive the executor with [`StaticLocalExecutor::tick`] or
+/// [`StaticLocalExecutor::run`] will cause the all spawned tasks to permanently leak. Any
+/// tasks at the time will not be cancelled.
 ///
 /// [`thread_local]: https://doc.rust-lang.org/std/macro.thread_local.html
 #[repr(transparent)]
