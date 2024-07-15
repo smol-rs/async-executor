@@ -1,3 +1,8 @@
+# Version 1.13.0
+
+- Relax the `Send` bound on `LocalExecutor::spawn_many`. (#120)
+- Ensure all features are documented on `docs.rs`. (#122)
+
 # Version 1.12.0
 
 - Add static executors, which are an optimization over executors that are kept
