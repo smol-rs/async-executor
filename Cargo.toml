@@ -24,6 +24,7 @@ concurrent-queue = "2.5.0"
 fastrand = "2.0.0"
 futures-lite = { version = "2.0.0", default-features = false }
 slab = "0.4.4"
+st3 = "0.4"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 futures-lite = { version = "2.0.0", default-features = false, features = ["std"] }
