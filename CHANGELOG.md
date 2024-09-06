@@ -1,3 +1,7 @@
+# Version 1.13.1
+
+- Fix docs.rs build. (#125)
+
 # Version 1.13.0
 
 - Relax the `Send` bound on `LocalExecutor::spawn_many`. (#120)
