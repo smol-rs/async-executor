@@ -1,6 +1,6 @@
 # async-executor
 
-[![Build](https://github.com/smol-rs/async-executor/workflows/Build%20and%20test/badge.svg)](
+[![Build](https://github.com/smol-rs/async-executor/actions/workflows/ci.yml/badge.svg)](
 https://github.com/smol-rs/async-executor/actions)
 [![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue.svg)](
 https://github.com/smol-rs/async-executor)
