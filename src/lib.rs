@@ -55,11 +55,18 @@ use slab::Slab;
 #[cfg(feature = "static")]
 mod static_executors;
 
+#[cfg(feature = "main_executor")]
+mod main_executor;
+
 #[doc(no_inline)]
 pub use async_task::{FallibleTask, Task};
+
 #[cfg(feature = "static")]
 #[cfg_attr(docsrs, doc(cfg(any(feature = "static"))))]
 pub use static_executors::*;
+
+#[cfg(feature = "main_executor")]
+pub use main_executor::*;
 
 /// An async executor.
 ///
