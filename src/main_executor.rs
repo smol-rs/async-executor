@@ -1,7 +1,7 @@
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use event_listener::Event;
 

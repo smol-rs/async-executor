@@ -1,6 +1,8 @@
+//! An example of using with_thread_pool.
+
 use std::sync::Arc;
 
-use async_executor::{Executor, with_thread_pool};
+use async_executor::{with_thread_pool, Executor};
 
 async fn async_main(_ex: &Executor<'_>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Hello, world!");
