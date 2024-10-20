@@ -89,7 +89,7 @@ impl MainExecutor for LocalExecutor<'_> {
 
 /// Run a function that takes an `Executor` inside of a thread pool.
 #[inline]
-fn with_thread_pool<T>(ex: &Executor<'_>, f: impl FnOnce() -> T) -> T {
+pub fn with_thread_pool<T>(ex: &Executor<'_>, f: impl FnOnce() -> T) -> T {
     let stopper = WaitForStop::new();
 
     // Create a thread for each CPU.
