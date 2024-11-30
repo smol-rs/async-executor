@@ -133,6 +133,9 @@ fn iterator_panics_mid_run() {
         )
     });
     assert!(panic.is_err());
+
+    let task = ex.spawn(future::ready(0));
+    assert_eq!(future::block_on(ex.run(task)), 0);
 }
 
 struct CallOnDrop<F: Fn()>(F);
