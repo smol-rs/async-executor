@@ -42,14 +42,16 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
-use std::task::{Poll, Waker};
+use std::task::{Context, Poll, Waker};
 
 use async_task::{Builder, Runnable};
 use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
+use pin_project_lite::pin_project;
 use slab::Slab;
 
 #[cfg(feature = "static")]
@@ -245,10 +247,7 @@ impl<'a> Executor<'a> {
         let entry = active.vacant_entry();
         let index = entry.key();
         let state = self.state_as_arc();
-        let future = async move {
-            let _guard = CallOnDrop(move || drop(state.active().try_remove(index)));
-            future.await
-        };
+        let future = AsyncCallOnDrop::new(future, move || drop(state.active().try_remove(index)));
 
         // Create the task and register it in the set of active tasks.
         //
@@ -1152,6 +1151,32 @@ struct CallOnDrop<F: FnMut()>(F);
 impl<F: FnMut()> Drop for CallOnDrop<F> {
     fn drop(&mut self) {
         (self.0)();
+    }
+}
+
+pin_project! {
+    /// A wrapper around a future, running a closure when dropped.
+    struct AsyncCallOnDrop<Fut, Cleanup: FnMut()> {
+        #[pin]
+        future: Fut,
+        cleanup: CallOnDrop<Cleanup>,
+    }
+}
+
+impl<Fut, Cleanup: FnMut()> AsyncCallOnDrop<Fut, Cleanup> {
+    fn new(future: Fut, cleanup: Cleanup) -> Self {
+        Self {
+            future,
+            cleanup: CallOnDrop(cleanup),
+        }
+    }
+}
+
+impl<Fut: Future, Cleanup: FnMut()> Future for AsyncCallOnDrop<Fut, Cleanup> {
+    type Output = Fut::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.project().future.poll(cx)
     }
 }
 
