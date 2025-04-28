@@ -1,3 +1,9 @@
+# Version 1.13.2
+
+- Fix build failure with minimal-versions. (#132)
+- Prevent executor from becoming unusable by panic of the iterator passed by the user to the `spawn_many`. (#136)
+- Reduce memory footprint. (#137)
+
 # Version 1.13.1
 
 - Fix docs.rs build. (#125)
