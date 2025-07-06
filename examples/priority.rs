@@ -72,9 +72,9 @@ fn main() {
 
         // Spawn a task with this priority.
         tasks.push(EX.spawn(priority, async move {
-            println!("{:?}", priority);
+            println!("{priority:?}");
             future::yield_now().await;
-            println!("{:?}", priority);
+            println!("{priority:?}");
         }));
     }
 
