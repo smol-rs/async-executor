@@ -38,6 +38,7 @@
     html_logo_url = "https://raw.githubusercontent.com/smol-rs/smol/master/assets/images/logo_fullsize_transparent.png"
 )]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![allow(clippy::unused_unit)] // false positive fixed in Rust 1.89
 
 use std::fmt;
 use std::marker::PhantomData;
