@@ -59,7 +59,7 @@ fn running_benches(c: &mut Criterion) {
         for (group_name, multithread) in [("single_thread", false), ("multi_thread", true)].iter() {
             let mut group = c.benchmark_group(group_name.to_string());
 
-            group.bench_function(format!("{}::spawn_one", prefix), |b| {
+            group.bench_function(format!("{prefix}::spawn_one"), |b| {
                 if with_static {
                     run_static(
                         || {
@@ -98,7 +98,7 @@ fn running_benches(c: &mut Criterion) {
                 });
             }
 
-            group.bench_function(format!("{}::spawn_many_local", prefix), |b| {
+            group.bench_function(format!("{prefix}::spawn_many_local"), |b| {
                 if with_static {
                     run_static(
                         || {
@@ -136,7 +136,7 @@ fn running_benches(c: &mut Criterion) {
                 }
             });
 
-            group.bench_function(format!("{}::spawn_recursively", prefix), |b| {
+            group.bench_function(format!("{prefix}::spawn_recursively"), |b| {
                 #[allow(clippy::manual_async_fn)]
                 fn go(i: usize) -> impl Future<Output = ()> + Send + 'static {
                     async move {
@@ -201,7 +201,7 @@ fn running_benches(c: &mut Criterion) {
                 }
             });
 
-            group.bench_function(format!("{}::yield_now", prefix), |b| {
+            group.bench_function(format!("{prefix}::yield_now"), |b| {
                 if with_static {
                     run_static(
                         || {
@@ -247,7 +247,7 @@ fn running_benches(c: &mut Criterion) {
                 }
             });
 
-            group.bench_function(format!("{}::channels", prefix), |b| {
+            group.bench_function(format!("{prefix}::channels"), |b| {
                 if with_static {
                     run_static(
                         || {
@@ -325,7 +325,7 @@ fn running_benches(c: &mut Criterion) {
                 }
             });
 
-            group.bench_function(format!("{}::web_server", prefix), |b| {
+            group.bench_function(format!("{prefix}::web_server"), |b| {
                 if with_static {
                     run_static(
                         || {
