@@ -1,3 +1,4 @@
+use crate::local_executor::State as LocalState;
 use crate::{debug_state, Executor, LocalExecutor, State};
 use async_task::{Builder, Runnable, Task};
 use slab::Slab;
@@ -84,15 +85,15 @@ impl LocalExecutor<'static> {
     /// future::block_on(ex.run(task));
     /// ```
     pub fn leak(self) -> &'static StaticLocalExecutor {
-        let ptr = self.inner.state_ptr();
+        let ptr = self.state_ptr();
         // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be valid
         // when accessed through state_ptr. This executor will live for the full 'static
         // lifetime so this isn't an arbitrary lifetime extension.
-        let state: &'static State = unsafe { &*ptr };
+        let state: &'static LocalState = unsafe { &*ptr };
 
         std::mem::forget(self);
 
-        let mut active = state.active.lock().unwrap();
+        let mut active = state.active.borrow_mut();
         if !active.is_empty() {
             // Reschedule all of the active tasks.
             for waker in active.drain() {
@@ -311,7 +312,7 @@ impl Default for StaticExecutor {
 /// [`thread_local]: https://doc.rust-lang.org/std/macro.thread_local.html
 #[repr(transparent)]
 pub struct StaticLocalExecutor {
-    state: State,
+    state: LocalState,
     marker_: PhantomData<UnsafeCell<()>>,
 }
 
@@ -320,7 +321,7 @@ impl RefUnwindSafe for StaticLocalExecutor {}
 
 impl fmt::Debug for StaticLocalExecutor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        debug_state(&self.state, "StaticLocalExecutor", f)
+        crate::local_executor::debug_state(&self.state, "StaticLocalExecutor", f)
     }
 }
 
@@ -338,7 +339,7 @@ impl StaticLocalExecutor {
     /// ```
     pub const fn new() -> Self {
         Self {
-            state: State::new(),
+            state: LocalState::new(),
             marker_: PhantomData,
         }
     }
@@ -360,9 +361,33 @@ impl StaticLocalExecutor {
     /// });
     /// ```
     pub fn spawn<T: 'static>(&'static self, future: impl Future<Output = T> + 'static) -> Task<T> {
-        let (runnable, task) = Builder::new()
-            .propagate_panic(true)
-            .spawn_local(|()| future, self.schedule());
+        // Create the task and register it in the set of active tasks.
+        //
+        // SAFETY:
+        //
+        // If `future` is not `Send`, this must be a `LocalExecutor` as per this
+        // function's unsafe precondition. Since `LocalExecutor` is `!Sync`,
+        // `try_tick`, `tick` and `run` can only be called from the origin
+        // thread of the `LocalExecutor`. Similarly, `spawn` can only  be called
+        // from the origin thread, ensuring that `future` and the executor share
+        // the same origin thread. The `Runnable` can be scheduled from other
+        // threads, but because of the above `Runnable` can only be called or
+        // dropped on the origin thread.
+        //
+        // `future` is not `'static`, but we make sure that the `Runnable` does
+        // not outlive `'a`. When the executor is dropped, the `active` field is
+        // drained and all of the `Waker`s are woken. Then, the queue inside of
+        // the `Executor` is drained of all of its runnables. This ensures that
+        // runnables are dropped and this precondition is satisfied.
+        //
+        // `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
+        // Therefore we do not need to worry about what is done with the
+        // `Waker`.
+        let (runnable, task) = unsafe {
+            Builder::new()
+                .propagate_panic(true)
+                .spawn_unchecked(|()| future, self.schedule())
+        };
         runnable.schedule();
         task
     }
@@ -464,12 +489,11 @@ impl StaticLocalExecutor {
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(&'static self) -> impl Fn(Runnable) + Send + Sync + 'static {
-        let state: &'static State = &self.state;
+    fn schedule(&'static self) -> impl Fn(Runnable) + 'static {
+        let state: &'static LocalState = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            state.queue.push(runnable).unwrap();
-            state.notify();
+            state.queue.borrow_mut().push_front(runnable);
         }
     }
 }

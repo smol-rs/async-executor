@@ -1,6 +1,6 @@
 //! Test for larger tasks.
 
-use async_executor::Executor;
+use async_executor::{Executor, LocalExecutor};
 use futures_lite::future::{self, block_on};
 use futures_lite::prelude::*;
 
@@ -80,6 +80,42 @@ fn do_run<Fut: Future<Output = ()>>(mut f: impl FnMut(Arc<Executor<'static>>) ->
     });
 }
 
+fn do_run_local<Fut: Future<Output = ()>>(mut f: impl FnMut(Arc<LocalExecutor<'static>>) -> Fut) {
+    // This should not run for longer than two minutes.
+    #[cfg(not(miri))]
+    let _stop_timeout = {
+        let (stop_timeout, stopper) = async_channel::bounded::<()>(1);
+        thread::spawn(move || {
+            block_on(async move {
+                let timeout = async {
+                    async_io::Timer::after(Duration::from_secs(2 * 60)).await;
+                    eprintln!("test timed out after 2m");
+                    std::process::exit(1)
+                };
+
+                let _ = stopper.recv().or(timeout).await;
+            })
+        });
+        stop_timeout
+    };
+
+    let ex = Arc::new(LocalExecutor::new());
+
+    // Test 1: Use the `run` command.
+    block_on(ex.run(f(ex.clone())));
+
+    // Test 2: Loop on `tick`.
+    block_on(async {
+        let ticker = async {
+            loop {
+                ex.tick().await;
+            }
+        };
+
+        f(ex.clone()).or(ticker).await
+    });
+}
+
 #[test]
 fn smoke() {
     do_run(|ex| async move { ex.spawn(async {}).await });
@@ -93,6 +129,24 @@ fn yield_now() {
 #[test]
 fn timer() {
     do_run(|ex| async move {
+        ex.spawn(async_io::Timer::after(Duration::from_millis(5)))
+            .await;
+    })
+}
+
+#[test]
+fn smoke_local() {
+    do_run_local(|ex| async move { ex.spawn(async {}).await });
+}
+
+#[test]
+fn yield_now_local() {
+    do_run_local(|ex| async move { ex.spawn(future::yield_now()).await })
+}
+
+#[test]
+fn timer_local() {
+    do_run_local(|ex| async move {
         ex.spawn(async_io::Timer::after(Duration::from_millis(5)))
             .await;
     })

@@ -1,129 +1,66 @@
-//! Async executors.
-//!
-//! This crate provides two reference executors that trade performance for
-//! functionality. They should be considered reference executors that are "good
-//! enough" for most use cases. For more specialized use cases, consider writing
-//! your own executor on top of [`async-task`].
-//!
-//! [`async-task`]: https://crates.io/crates/async-task
-//!
-//! # Examples
-//!
-//! ```
-//! use async_executor::Executor;
-//! use futures_lite::future;
-//!
-//! // Create a new executor.
-//! let ex = Executor::new();
-//!
-//! // Spawn a task.
-//! let task = ex.spawn(async {
-//!     println!("Hello world");
-//! });
-//!
-//! // Run the executor until the task completes.
-//! future::block_on(ex.run(task));
-//! ```
-
-#![warn(
-    missing_docs,
-    missing_debug_implementations,
-    rust_2018_idioms,
-    clippy::undocumented_unsafe_blocks
-)]
-#![doc(
-    html_favicon_url = "https://raw.githubusercontent.com/smol-rs/smol/master/assets/images/logo_fullsize_transparent.png"
-)]
-#![doc(
-    html_logo_url = "https://raw.githubusercontent.com/smol-rs/smol/master/assets/images/logo_fullsize_transparent.png"
-)]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
-#![allow(clippy::unused_unit)] // false positive fixed in Rust 1.89
-
+use std::cell::{BorrowError, Cell, RefCell, RefMut};
+use std::collections::VecDeque;
 use std::fmt;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
-use std::task::{Context, Poll, Waker};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Poll, Waker};
 
 use async_task::{Builder, Runnable};
-use concurrent_queue::ConcurrentQueue;
 use futures_lite::{future, prelude::*};
-use pin_project_lite::pin_project;
 use slab::Slab;
 
-mod local_executor;
-#[cfg(feature = "static")]
-mod static_executors;
-
+use crate::AsyncCallOnDrop;
 #[doc(no_inline)]
-pub use async_task::{FallibleTask, Task};
-pub use local_executor::*;
-#[cfg(feature = "static")]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "static"))))]
-pub use static_executors::*;
+pub use async_task::Task;
 
-/// An async executor.
+/// A thread-local executor.
+///
+/// The executor can only be run on the thread that created it.
 ///
 /// # Examples
 ///
-/// A multi-threaded executor:
-///
 /// ```
-/// use async_channel::unbounded;
-/// use async_executor::Executor;
-/// use easy_parallel::Parallel;
+/// use async_executor::LocalExecutor;
 /// use futures_lite::future;
 ///
-/// let ex = Executor::new();
-/// let (signal, shutdown) = unbounded::<()>();
+/// let local_ex = LocalExecutor::new();
 ///
-/// Parallel::new()
-///     // Run four executor threads.
-///     .each(0..4, |_| future::block_on(ex.run(shutdown.recv())))
-///     // Run the main future on the current thread.
-///     .finish(|| future::block_on(async {
-///         println!("Hello world!");
-///         drop(signal);
-///     }));
+/// future::block_on(local_ex.run(async {
+///     println!("Hello world!");
+/// }));
 /// ```
-pub struct Executor<'a> {
+pub struct LocalExecutor<'a> {
     /// The executor state.
-    state: AtomicPtr<State>,
+    state: Cell<*mut State>,
 
     /// Makes the `'a` lifetime invariant.
     _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
 }
 
-// SAFETY: Executor stores no thread local state that can be accessed via other thread.
-unsafe impl Send for Executor<'_> {}
-// SAFETY: Executor internally synchronizes all of it's operations internally.
-unsafe impl Sync for Executor<'_> {}
+impl UnwindSafe for LocalExecutor<'_> {}
+impl RefUnwindSafe for LocalExecutor<'_> {}
 
-impl UnwindSafe for Executor<'_> {}
-impl RefUnwindSafe for Executor<'_> {}
-
-impl fmt::Debug for Executor<'_> {
+impl fmt::Debug for LocalExecutor<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        debug_executor(self, "Executor", f)
+        debug_executor(self, "LocalExecutor", f)
     }
 }
 
-impl<'a> Executor<'a> {
-    /// Creates a new executor.
+impl<'a> LocalExecutor<'a> {
+    /// Creates a single-threaded executor.
     ///
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     ///
-    /// let ex = Executor::new();
+    /// let local_ex = LocalExecutor::new();
     /// ```
-    pub const fn new() -> Executor<'a> {
-        Executor {
-            state: AtomicPtr::new(std::ptr::null_mut()),
+    pub const fn new() -> LocalExecutor<'a> {
+        LocalExecutor {
+            state: Cell::new(std::ptr::null_mut()),
             _marker: PhantomData,
         }
     }
@@ -133,18 +70,18 @@ impl<'a> Executor<'a> {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     ///
-    /// let ex = Executor::new();
-    /// assert!(ex.is_empty());
+    /// let local_ex = LocalExecutor::new();
+    /// assert!(local_ex.is_empty());
     ///
-    /// let task = ex.spawn(async {
+    /// let task = local_ex.spawn(async {
     ///     println!("Hello world");
     /// });
-    /// assert!(!ex.is_empty());
+    /// assert!(!local_ex.is_empty());
     ///
-    /// assert!(ex.try_tick());
-    /// assert!(ex.is_empty());
+    /// assert!(local_ex.try_tick());
+    /// assert!(local_ex.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
         self.state().active().is_empty()
@@ -155,15 +92,15 @@ impl<'a> Executor<'a> {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     ///
-    /// let ex = Executor::new();
+    /// let local_ex = LocalExecutor::new();
     ///
-    /// let task = ex.spawn(async {
+    /// let task = local_ex.spawn(async {
     ///     println!("Hello world");
     /// });
     /// ```
-    pub fn spawn<T: Send + 'a>(&self, future: impl Future<Output = T> + Send + 'a) -> Task<T> {
+    pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
         let mut active = self.state().active();
 
         // SAFETY: `T` and the future are `Send`.
@@ -176,20 +113,19 @@ impl<'a> Executor<'a> {
     /// spawns all of the tasks in one go. With large amounts of tasks this can improve
     /// contention.
     ///
-    /// For very large numbers of tasks the lock is occasionally dropped and re-acquired to
-    /// prevent runner thread starvation. It is assumed that the iterator provided does not
-    /// block; blocking iterators can lock up the internal mutex and therefore the entire
-    /// executor.
+    /// It is assumed that the iterator provided does not block; blocking iterators can lock up
+    /// the internal mutex and therefore the entire executor. Unlike [`Executor::spawn`], the
+    /// mutex is not released, as there are no other threads that can poll this executor.
     ///
     /// ## Example
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     /// use futures_lite::{stream, prelude::*};
     /// use std::future::ready;
     ///
     /// # futures_lite::future::block_on(async {
-    /// let mut ex = Executor::new();
+    /// let mut ex = LocalExecutor::new();
     ///
     /// let futures = [
     ///     ready(1),
@@ -209,8 +145,9 @@ impl<'a> Executor<'a> {
     /// # });
     /// ```
     ///
-    /// [`spawn`]: Executor::spawn
-    pub fn spawn_many<T: Send + 'a, F: Future<Output = T> + Send + 'a>(
+    /// [`spawn`]: LocalExecutor::spawn
+    /// [`Executor::spawn_many`]: Executor::spawn_many
+    pub fn spawn_many<T: 'a, F: Future<Output = T> + 'a>(
         &self,
         futures: impl IntoIterator<Item = F>,
         handles: &mut impl Extend<Task<F::Output>>,
@@ -248,7 +185,7 @@ impl<'a> Executor<'a> {
         // Remove the task from the set of active tasks when the future finishes.
         let entry = active.vacant_entry();
         let index = entry.key();
-        let state = self.state_as_arc();
+        let state = self.state_as_rc();
         let future = AsyncCallOnDrop::new(future, move || drop(state.active().try_remove(index)));
 
         // Create the task and register it in the set of active tasks.
@@ -289,9 +226,9 @@ impl<'a> Executor<'a> {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     ///
-    /// let ex = Executor::new();
+    /// let ex = LocalExecutor::new();
     /// assert!(!ex.try_tick()); // no tasks to run
     ///
     /// let task = ex.spawn(async {
@@ -312,10 +249,10 @@ impl<'a> Executor<'a> {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     /// use futures_lite::future;
     ///
-    /// let ex = Executor::new();
+    /// let ex = LocalExecutor::new();
     ///
     /// let task = ex.spawn(async {
     ///     println!("Hello world");
@@ -331,13 +268,13 @@ impl<'a> Executor<'a> {
     /// # Examples
     ///
     /// ```
-    /// use async_executor::Executor;
+    /// use async_executor::LocalExecutor;
     /// use futures_lite::future;
     ///
-    /// let ex = Executor::new();
+    /// let local_ex = LocalExecutor::new();
     ///
-    /// let task = ex.spawn(async { 1 + 2 });
-    /// let res = future::block_on(ex.run(async { task.await * 2 }));
+    /// let task = local_ex.spawn(async { 1 + 2 });
+    /// let res = future::block_on(local_ex.run(async { task.await * 2 }));
     ///
     /// assert_eq!(res, 6);
     /// ```
@@ -346,39 +283,29 @@ impl<'a> Executor<'a> {
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
-        let state = self.state_as_arc();
+    fn schedule(&self) -> impl Fn(Runnable) + 'static {
+        let state = self.state_as_rc();
 
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            state.queue.push(runnable).unwrap();
+            state.queue.borrow_mut().push_front(runnable);
             state.notify();
         }
     }
 
     /// Returns a pointer to the inner state.
     #[inline]
-    fn state_ptr(&self) -> *const State {
+    pub(crate) fn state_ptr(&self) -> *const State {
         #[cold]
-        fn alloc_state(atomic_ptr: &AtomicPtr<State>) -> *mut State {
-            let state = Arc::new(State::new());
-            // TODO: Switch this to use cast_mut once the MSRV can be bumped past 1.65
-            let ptr = Arc::into_raw(state) as *mut State;
-            if let Err(actual) = atomic_ptr.compare_exchange(
-                std::ptr::null_mut(),
-                ptr,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                // SAFETY: This was just created from Arc::into_raw.
-                drop(unsafe { Arc::from_raw(ptr) });
-                actual
-            } else {
-                ptr
-            }
+        fn alloc_state(cell: &Cell<*mut State>) -> *mut State {
+            debug_assert!(cell.get().is_null());
+            let state = Rc::new(State::new());
+            let ptr = Rc::into_raw(state) as *mut State;
+            cell.set(ptr);
+            ptr
         }
 
-        let mut ptr = self.state.load(Ordering::Acquire);
+        let mut ptr = self.state.get();
         if ptr.is_null() {
             ptr = alloc_state(&self.state);
         }
@@ -395,17 +322,17 @@ impl<'a> Executor<'a> {
 
     // Clones the inner state Arc
     #[inline]
-    fn state_as_arc(&self) -> Arc<State> {
+    fn state_as_rc(&self) -> Rc<State> {
         // SAFETY: So long as an Executor lives, it's state pointer will always be a valid
         // Arc when accessed through state_ptr.
-        let arc = unsafe { Arc::from_raw(self.state_ptr()) };
+        let arc = unsafe { Rc::from_raw(self.state_ptr()) };
         let clone = arc.clone();
         std::mem::forget(arc);
         clone
     }
 }
 
-impl Drop for Executor<'_> {
+impl Drop for LocalExecutor<'_> {
     fn drop(&mut self) {
         let ptr = *self.state.get_mut();
         if ptr.is_null() {
@@ -414,7 +341,7 @@ impl Drop for Executor<'_> {
 
         // SAFETY: As ptr is not null, it was allocated via Arc::new and converted
         // via Arc::into_raw in state_ptr.
-        let state = unsafe { Arc::from_raw(ptr) };
+        let state = unsafe { Rc::from_raw(ptr) };
 
         let mut active = state.active();
         for w in active.drain() {
@@ -422,53 +349,49 @@ impl Drop for Executor<'_> {
         }
         drop(active);
 
-        while state.queue.pop().is_ok() {}
+        state.queue.borrow_mut().clear();
     }
 }
 
-impl<'a> Default for Executor<'a> {
-    fn default() -> Executor<'a> {
-        Executor::new()
+impl<'a> Default for LocalExecutor<'a> {
+    fn default() -> LocalExecutor<'a> {
+        LocalExecutor::new()
     }
 }
 
 /// The state of a executor.
-struct State {
+pub(crate) struct State {
     /// The global queue.
-    queue: ConcurrentQueue<Runnable>,
-
-    /// Local queues created by runners.
-    local_queues: RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>,
+    pub(crate) queue: RefCell<VecDeque<Runnable>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
 
     /// A list of sleeping tickers.
-    sleepers: Mutex<Sleepers>,
+    sleepers: RefCell<Sleepers>,
 
     /// Currently active tasks.
-    active: Mutex<Slab<Waker>>,
+    pub(crate) active: RefCell<Slab<Waker>>,
 }
 
 impl State {
     /// Creates state for a new executor.
-    const fn new() -> State {
+    pub(crate) const fn new() -> State {
         State {
-            queue: ConcurrentQueue::unbounded(),
-            local_queues: RwLock::new(Vec::new()),
+            queue: RefCell::new(VecDeque::new()),
             notified: AtomicBool::new(true),
-            sleepers: Mutex::new(Sleepers {
+            sleepers: RefCell::new(Sleepers {
                 count: 0,
                 wakers: Vec::new(),
                 free_ids: Vec::new(),
             }),
-            active: Mutex::new(Slab::new()),
+            active: RefCell::new(Slab::new()),
         }
     }
 
     /// Returns a reference to currently active tasks.
-    fn active(&self) -> MutexGuard<'_, Slab<Waker>> {
-        self.active.lock().unwrap_or_else(|e| e.into_inner())
+    fn active(&self) -> RefMut<'_, Slab<Waker>> {
+        self.active.borrow_mut()
     }
 
     /// Notifies a sleeping ticker.
@@ -479,7 +402,7 @@ impl State {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            let waker = self.sleepers.lock().unwrap().notify();
+            let waker = self.sleepers.borrow_mut().notify();
             if let Some(w) = waker {
                 w.wake();
             }
@@ -487,9 +410,9 @@ impl State {
     }
 
     pub(crate) fn try_tick(&self) -> bool {
-        match self.queue.pop() {
-            Err(_) => false,
-            Ok(runnable) => {
+        match self.queue.borrow_mut().pop_back() {
+            None => false,
+            Some(runnable) => {
                 // Notify another ticker now to pick up where this ticker left off, just in case
                 // running the task takes a long time.
                 self.notify();
@@ -508,13 +431,12 @@ impl State {
 
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         let mut runner = Runner::new(self);
-        let mut rng = fastrand::Rng::new();
 
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
                 for _ in 0..200 {
-                    let runnable = runner.runnable(&mut rng).await;
+                    let runnable = runner.runnable().await;
                     runnable.run();
                 }
                 future::yield_now().await;
@@ -624,7 +546,7 @@ impl Ticker<'_> {
     ///
     /// Returns `false` if the ticker was already sleeping and unnotified.
     fn sleep(&mut self, waker: &Waker) -> bool {
-        let mut sleepers = self.state.sleepers.lock().unwrap();
+        let mut sleepers = self.state.sleepers.borrow_mut();
 
         match self.sleeping {
             // Move to sleeping state.
@@ -650,7 +572,7 @@ impl Ticker<'_> {
     /// Moves the ticker into woken state.
     fn wake(&mut self) {
         if self.sleeping != 0 {
-            let mut sleepers = self.state.sleepers.lock().unwrap();
+            let mut sleepers = self.state.sleepers.borrow_mut();
             sleepers.remove(self.sleeping);
 
             self.state
@@ -662,7 +584,8 @@ impl Ticker<'_> {
 
     /// Waits for the next runnable task to run.
     async fn runnable(&mut self) -> Runnable {
-        self.runnable_with(|| self.state.queue.pop().ok()).await
+        self.runnable_with(|| self.state.queue.borrow_mut().pop_back())
+            .await
     }
 
     /// Waits for the next runnable task to run, given a function that searches for a task.
@@ -698,7 +621,7 @@ impl Drop for Ticker<'_> {
     fn drop(&mut self) {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         if self.sleeping != 0 {
-            let mut sleepers = self.state.sleepers.lock().unwrap();
+            let mut sleepers = self.state.sleepers.borrow_mut();
             let notified = sleepers.remove(self.sleeping);
 
             self.state
@@ -724,9 +647,6 @@ struct Runner<'a> {
     /// Inner ticker.
     ticker: Ticker<'a>,
 
-    /// The local queue.
-    local: Arc<ConcurrentQueue<Runnable>>,
-
     /// Bumped every time a runnable task is found.
     ticks: usize,
 }
@@ -737,114 +657,36 @@ impl Runner<'_> {
         let runner = Runner {
             state,
             ticker: Ticker::new(state),
-            local: Arc::new(ConcurrentQueue::bounded(512)),
             ticks: 0,
         };
-        state
-            .local_queues
-            .write()
-            .unwrap()
-            .push(runner.local.clone());
         runner
     }
 
     /// Waits for the next runnable task to run.
-    async fn runnable(&mut self, rng: &mut fastrand::Rng) -> Runnable {
+    async fn runnable(&mut self) -> Runnable {
         let runnable = self
             .ticker
             .runnable_with(|| {
-                // Try the local queue.
-                if let Ok(r) = self.local.pop() {
-                    return Some(r);
-                }
-
-                // Try stealing from the global queue.
-                if let Ok(r) = self.state.queue.pop() {
-                    steal(&self.state.queue, &self.local);
-                    return Some(r);
-                }
-
-                // Try stealing from other runners.
-                let local_queues = self.state.local_queues.read().unwrap();
-
-                // Pick a random starting point in the iterator list and rotate the list.
-                let n = local_queues.len();
-                let start = rng.usize(..n);
-                let iter = local_queues
-                    .iter()
-                    .chain(local_queues.iter())
-                    .skip(start)
-                    .take(n);
-
-                // Remove this runner's local queue.
-                let iter = iter.filter(|local| !Arc::ptr_eq(local, &self.local));
-
-                // Try stealing from each local queue in the list.
-                for local in iter {
-                    steal(local, &self.local);
-                    if let Ok(r) = self.local.pop() {
-                        return Some(r);
-                    }
-                }
-
-                None
+                // Try popping from the queue.
+                self.state.queue.borrow_mut().pop_back()
             })
             .await;
 
         // Bump the tick counter.
         self.ticks = self.ticks.wrapping_add(1);
 
-        if self.ticks % 64 == 0 {
-            // Steal tasks from the global queue to ensure fair task scheduling.
-            steal(&self.state.queue, &self.local);
-        }
-
         runnable
     }
 }
 
-impl Drop for Runner<'_> {
-    fn drop(&mut self) {
-        // Remove the local queue.
-        self.state
-            .local_queues
-            .write()
-            .unwrap()
-            .retain(|local| !Arc::ptr_eq(local, &self.local));
-
-        // Re-schedule remaining tasks in the local queue.
-        while let Ok(r) = self.local.pop() {
-            r.schedule();
-        }
-    }
-}
-
-/// Steals some items from one queue into another.
-fn steal<T>(src: &ConcurrentQueue<T>, dest: &ConcurrentQueue<T>) {
-    // Half of `src`'s length rounded up.
-    let mut count = (src.len() + 1) / 2;
-
-    if count > 0 {
-        // Don't steal more than fits into the queue.
-        if let Some(cap) = dest.capacity() {
-            count = count.min(cap - dest.len());
-        }
-
-        // Steal tasks.
-        for _ in 0..count {
-            if let Ok(t) = src.pop() {
-                assert!(dest.push(t).is_ok());
-            } else {
-                break;
-            }
-        }
-    }
-}
-
 /// Debug implementation for `Executor` and `LocalExecutor`.
-fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn debug_executor(
+    executor: &LocalExecutor<'_>,
+    name: &str,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     // Get a reference to the state.
-    let ptr = executor.state.load(Ordering::Acquire);
+    let ptr = executor.state.get();
     if ptr.is_null() {
         // The executor has not been initialized.
         struct Uninitialized;
@@ -867,126 +709,34 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
 }
 
 /// Debug implementation for `Executor` and `LocalExecutor`.
-fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+pub(crate) fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     /// Debug wrapper for the number of active tasks.
-    struct ActiveTasks<'a>(&'a Mutex<Slab<Waker>>);
+    struct ActiveTasks<'a>(&'a RefCell<Slab<Waker>>);
 
     impl fmt::Debug for ActiveTasks<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self.0.try_lock() {
+            match self.0.try_borrow() {
                 Ok(lock) => fmt::Debug::fmt(&lock.len(), f),
-                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
-                Err(TryLockError::Poisoned(err)) => fmt::Debug::fmt(&err.into_inner().len(), f),
-            }
-        }
-    }
-
-    /// Debug wrapper for the local runners.
-    struct LocalRunners<'a>(&'a RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>);
-
-    impl fmt::Debug for LocalRunners<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self.0.try_read() {
-                Ok(lock) => f
-                    .debug_list()
-                    .entries(lock.iter().map(|queue| queue.len()))
-                    .finish(),
-                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
-                Err(TryLockError::Poisoned(_)) => f.write_str("<poisoned>"),
+                Err(BorrowError { .. }) => f.write_str("<blocked>"),
             }
         }
     }
 
     /// Debug wrapper for the sleepers.
-    struct SleepCount<'a>(&'a Mutex<Sleepers>);
+    struct SleepCount<'a>(&'a RefCell<Sleepers>);
 
     impl fmt::Debug for SleepCount<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self.0.try_lock() {
-                Ok(lock) => fmt::Debug::fmt(&lock.count, f),
-                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
-                Err(TryLockError::Poisoned(_)) => f.write_str("<poisoned>"),
+            match self.0.try_borrow() {
+                Ok(sleepers) => fmt::Debug::fmt(&sleepers.count, f),
+                Err(BorrowError { .. }) => f.write_str("<blocked>"),
             }
         }
     }
 
     f.debug_struct(name)
         .field("active", &ActiveTasks(&state.active))
-        .field("global_tasks", &state.queue.len())
-        .field("local_runners", &LocalRunners(&state.local_queues))
+        .field("global_tasks", &state.queue.borrow().len())
         .field("sleepers", &SleepCount(&state.sleepers))
         .finish()
-}
-
-/// Runs a closure when dropped.
-struct CallOnDrop<F: FnMut()>(F);
-
-impl<F: FnMut()> Drop for CallOnDrop<F> {
-    fn drop(&mut self) {
-        (self.0)();
-    }
-}
-
-pin_project! {
-    /// A wrapper around a future, running a closure when dropped.
-    struct AsyncCallOnDrop<Fut, Cleanup: FnMut()> {
-        #[pin]
-        future: Fut,
-        cleanup: CallOnDrop<Cleanup>,
-    }
-}
-
-impl<Fut, Cleanup: FnMut()> AsyncCallOnDrop<Fut, Cleanup> {
-    fn new(future: Fut, cleanup: Cleanup) -> Self {
-        Self {
-            future,
-            cleanup: CallOnDrop(cleanup),
-        }
-    }
-}
-
-impl<Fut: Future, Cleanup: FnMut()> Future for AsyncCallOnDrop<Fut, Cleanup> {
-    type Output = Fut::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.project().future.poll(cx)
-    }
-}
-
-fn _ensure_send_and_sync() {
-    use futures_lite::future::pending;
-
-    fn is_send<T: Send>(_: T) {}
-    fn is_sync<T: Sync>(_: T) {}
-    fn is_static<T: 'static>(_: T) {}
-
-    is_send::<Executor<'_>>(Executor::new());
-    is_sync::<Executor<'_>>(Executor::new());
-
-    let ex = Executor::new();
-    is_send(ex.run(pending::<()>()));
-    is_sync(ex.run(pending::<()>()));
-    is_send(ex.tick());
-    is_sync(ex.tick());
-    is_send(ex.schedule());
-    is_sync(ex.schedule());
-    is_static(ex.schedule());
-
-    /// ```compile_fail
-    /// use async_executor::LocalExecutor;
-    /// use futures_lite::future::pending;
-    ///
-    /// fn is_send<T: Send>(_: T) {}
-    /// fn is_sync<T: Sync>(_: T) {}
-    ///
-    /// is_send::<LocalExecutor<'_>>(LocalExecutor::new());
-    /// is_sync::<LocalExecutor<'_>>(LocalExecutor::new());
-    ///
-    /// let ex = LocalExecutor::new();
-    /// is_send(ex.run(pending::<()>()));
-    /// is_sync(ex.run(pending::<()>()));
-    /// is_send(ex.tick());
-    /// is_sync(ex.tick());
-    /// ```
-    fn _negative_test() {}
 }
