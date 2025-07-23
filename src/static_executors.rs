@@ -93,7 +93,7 @@ impl LocalExecutor<'static> {
 
         std::mem::forget(self);
 
-        let mut active = state.active.borrow_mut();
+        let mut active = state.active();
         if !active.is_empty() {
             // Reschedule all of the active tasks.
             for waker in active.drain() {
@@ -402,20 +402,27 @@ impl StaticLocalExecutor {
         &'static self,
         future: impl Future<Output = T> + 'a,
     ) -> Task<T> {
+        // Create the task and register it in the set of active tasks.
+        //
         // SAFETY:
         //
-        // - `future` is not `Send` but `StaticLocalExecutor` is `!Sync`,
-        //   `try_tick`, `tick` and `run` can only be called from the origin
-        //    thread of the `StaticLocalExecutor`. Similarly, `spawn_scoped` can only
-        //    be called from the origin thread, ensuring that `future` and the executor
-        //    share the same origin thread. The `Runnable` can be scheduled from other
-        //    threads, but because of the above `Runnable` can only be called or
-        //    dropped on the origin thread.
-        // - `future` is not `'static`, but the caller guarantees that the
-        //    task, and thus its `Runnable` must not live longer than `'a`.
-        // - `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
-        //    Therefore we do not need to worry about what is done with the
-        //    `Waker`.
+        // `future` may not `Send` but `StaticLocalExecutor` is `!Sync`,
+        // `try_tick`, `tick` and `run` can only be called from the origin
+        // thread of the `StaticLocalExecutor`. Similarly, `spawn_scoped` can only
+        // be called from the origin thread, ensuring that `future` and the executor
+        // share the same origin thread. The `Runnable` can be scheduled from other
+        // threads, but because of the above `Runnable` can only be called or
+        // dropped on the origin thread.
+        //
+        // `future` is not `'static`, but the caller guarantees that the
+        //  task, and thus its `Runnable` must not live longer than `'a`.
+        //
+        // `self.schedule()` is not `Send` nor `Sync`. As StaticLocalExecutor is not 
+        // `Send`, the `Waker` is guaranteed// to only be used on the same thread
+        // it was spawned on.
+        //
+        // `self.schedule()` is `'static`, and thus will outlive all borrowed 
+        // variables in the future.
         let (runnable, task) = unsafe {
             Builder::new()
                 .propagate_panic(true)
@@ -494,6 +501,7 @@ impl StaticLocalExecutor {
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             state.queue.borrow_mut().push_front(runnable);
+            state.notify();
         }
     }
 }
