@@ -4,7 +4,6 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Poll, Waker};
 
 use async_task::{Builder, Runnable};
@@ -364,9 +363,6 @@ pub(crate) struct State {
     /// The global queue.
     pub(crate) queue: RefCell<VecDeque<Runnable>>,
 
-    /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
-    notified: AtomicBool,
-
     /// A list of sleeping tickers.
     sleepers: RefCell<Sleepers>,
 
@@ -379,7 +375,6 @@ impl State {
     pub(crate) const fn new() -> State {
         State {
             queue: RefCell::new(VecDeque::new()),
-            notified: AtomicBool::new(true),
             sleepers: RefCell::new(Sleepers {
                 count: 0,
                 wakers: Vec::new(),
@@ -397,15 +392,9 @@ impl State {
     /// Notifies a sleeping ticker.
     #[inline]
     fn notify(&self) {
-        if self
-            .notified
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            let waker = self.sleepers.borrow_mut().notify();
-            if let Some(w) = waker {
-                w.wake();
-            }
+        let waker = self.sleepers.borrow_mut().notify();
+        if let Some(w) = waker {
+            w.wake();
         }
     }
 
@@ -505,11 +494,6 @@ impl Sleepers {
         true
     }
 
-    /// Returns `true` if a sleeping ticker is notified or no tickers are sleeping.
-    fn is_notified(&self) -> bool {
-        self.count == 0 || self.count > self.wakers.len()
-    }
-
     /// Returns notification waker for a sleeping ticker.
     ///
     /// If a ticker was notified already or there are no tickers, `None` will be returned.
@@ -562,10 +546,6 @@ impl Ticker<'_> {
             }
         }
 
-        self.state
-            .notified
-            .store(sleepers.is_notified(), Ordering::Release);
-
         true
     }
 
@@ -574,10 +554,6 @@ impl Ticker<'_> {
         if self.sleeping != 0 {
             let mut sleepers = self.state.sleepers.borrow_mut();
             sleepers.remove(self.sleeping);
-
-            self.state
-                .notified
-                .store(sleepers.is_notified(), Ordering::Release);
         }
         self.sleeping = 0;
     }
@@ -623,10 +599,6 @@ impl Drop for Ticker<'_> {
         if self.sleeping != 0 {
             let mut sleepers = self.state.sleepers.borrow_mut();
             let notified = sleepers.remove(self.sleeping);
-
-            self.state
-                .notified
-                .store(sleepers.is_notified(), Ordering::Release);
 
             // If this ticker was notified, then notify another ticker.
             if notified {
