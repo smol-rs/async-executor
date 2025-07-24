@@ -40,14 +40,18 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::unused_unit)] // false positive fixed in Rust 1.89
 
-use std::fmt;
-use std::marker::PhantomData;
-use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
-use std::task::{Context, Poll, Waker};
+extern crate alloc;
+
+use alloc::rc::Rc;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::fmt;
+use core::marker::PhantomData;
+use core::panic::{RefUnwindSafe, UnwindSafe};
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::task::{Context, Poll, Waker};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 
 use async_task::{Builder, Runnable};
 use concurrent_queue::ConcurrentQueue;
@@ -90,10 +94,10 @@ pub use static_executors::*;
 /// ```
 pub struct Executor<'a> {
     /// The executor state.
-    pub(crate) state: AtomicPtr<State>,
+    state: AtomicPtr<State>,
 
     /// Makes the `'a` lifetime invariant.
-    _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
+    _marker: PhantomData<core::cell::UnsafeCell<&'a ()>>,
 }
 
 // SAFETY: Executor stores no thread local state that can be accessed via other thread.
@@ -122,7 +126,7 @@ impl<'a> Executor<'a> {
     /// ```
     pub const fn new() -> Self {
         Self {
-            state: AtomicPtr::new(std::ptr::null_mut()),
+            state: AtomicPtr::new(core::ptr::null_mut()),
             _marker: PhantomData,
         }
     }
@@ -186,7 +190,7 @@ impl<'a> Executor<'a> {
     /// ```
     /// use async_executor::Executor;
     /// use futures_lite::{stream, prelude::*};
-    /// use std::future::ready;
+    /// use core::future::ready;
     ///
     /// # futures_lite::future::block_on(async {
     /// let mut ex = Executor::new();
@@ -367,7 +371,7 @@ impl<'a> Executor<'a> {
             let state = Arc::new(State::new());
             let ptr = Arc::into_raw(state).cast_mut();
             if let Err(actual) = atomic_ptr.compare_exchange(
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
                 ptr,
                 Ordering::AcqRel,
                 Ordering::Acquire,
@@ -527,7 +531,7 @@ impl<'a> LocalExecutor<'a> {
     /// ```
     /// use async_executor::LocalExecutor;
     /// use futures_lite::{stream, prelude::*};
-    /// use std::future::ready;
+    /// use core::future::ready;
     ///
     /// # futures_lite::future::block_on(async {
     /// let mut ex = LocalExecutor::new();
