@@ -38,6 +38,7 @@
     html_logo_url = "https://raw.githubusercontent.com/smol-rs/smol/master/assets/images/logo_fullsize_transparent.png"
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::unused_unit)] // false positive fixed in Rust 1.89
 
 extern crate alloc;
@@ -51,6 +52,8 @@ use core::panic::{RefUnwindSafe, UnwindSafe};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use core::task::{Context, Poll, Waker};
+
+#[cfg(feature = "std")]
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 
 use async_task::{Builder, Runnable};
@@ -281,9 +284,7 @@ impl<'a> Executor<'a> {
         // `Self::schedule` may not be `'static`, but we make sure that the `Waker` does
         // not outlive `'a`. When the executor is dropped, the `active` field is
         // drained and all of the `Waker`s are woken.
-        let (runnable, task) = Builder::new()
-            .propagate_panic(true)
-            .spawn_unchecked(|()| future, Self::schedule(state));
+        let (runnable, task) = new_builder().spawn_unchecked(|()| future, Self::schedule(state));
         entry.insert(runnable.waker());
 
         runnable.schedule();
@@ -739,7 +740,10 @@ impl State {
 
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
         let mut runner = Runner::new(self);
+        #[cfg(feature = "std")]
         let mut rng = fastrand::Rng::new();
+        #[cfg(not(feature = "std"))]
+        let mut rng = fastrand::Rng::with_seed(Self::notify as u64);
 
         // A future that runs tasks forever.
         let run_forever = async {
@@ -1060,6 +1064,14 @@ impl Drop for Runner<'_> {
             r.schedule();
         }
     }
+}
+
+/// Creates a new builder (abstracting over differences between `std` and `no-std`).
+fn new_builder() -> Builder<()> {
+    let builder = Builder::new();
+    #[cfg(feature = "std")]
+    let builder = builder.propagate_panic(true);
+    builder
 }
 
 /// Steals some items from one queue into another.
