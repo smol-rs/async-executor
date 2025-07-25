@@ -120,8 +120,8 @@ impl<'a> Executor<'a> {
     ///
     /// let ex = Executor::new();
     /// ```
-    pub const fn new() -> Executor<'a> {
-        Executor {
+    pub const fn new() -> Self {
+        Self {
             state: AtomicPtr::new(std::ptr::null_mut()),
             _marker: PhantomData,
         }
@@ -413,8 +413,8 @@ impl Drop for Executor<'_> {
 }
 
 impl<'a> Default for Executor<'a> {
-    fn default() -> Executor<'a> {
-        Executor::new()
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -461,8 +461,8 @@ impl<'a> LocalExecutor<'a> {
     ///
     /// let local_ex = LocalExecutor::new();
     /// ```
-    pub const fn new() -> LocalExecutor<'a> {
-        LocalExecutor {
+    pub const fn new() -> Self {
+        Self {
             inner: Executor::new(),
             _marker: PhantomData,
         }
@@ -551,7 +551,6 @@ impl<'a> LocalExecutor<'a> {
     /// ```
     ///
     /// [`spawn`]: LocalExecutor::spawn
-    /// [`Executor::spawn_many`]: Executor::spawn_many
     pub fn spawn_many<T: 'a, F: Future<Output = T> + 'a>(
         &self,
         futures: impl IntoIterator<Item = F>,
@@ -644,8 +643,8 @@ impl<'a> LocalExecutor<'a> {
 }
 
 impl<'a> Default for LocalExecutor<'a> {
-    fn default() -> LocalExecutor<'a> {
-        LocalExecutor::new()
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -669,8 +668,8 @@ struct State {
 
 impl State {
     /// Creates state for a new executor.
-    const fn new() -> State {
-        State {
+    const fn new() -> Self {
+        Self {
             queue: ConcurrentQueue::unbounded(),
             local_queues: RwLock::new(Vec::new()),
             notified: AtomicBool::new(true),
@@ -842,10 +841,10 @@ struct Ticker<'a> {
     sleeping: usize,
 }
 
-impl Ticker<'_> {
+impl<'a> Ticker<'a> {
     /// Creates a ticker.
-    fn new(state: &State) -> Ticker<'_> {
-        Ticker { state, sleeping: 0 }
+    fn new(state: &'a State) -> Self {
+        Self { state, sleeping: 0 }
     }
 
     /// Moves the ticker into sleeping and unnotified state.
@@ -971,10 +970,10 @@ struct Runner<'a> {
     ticks: usize,
 }
 
-impl Runner<'_> {
+impl<'a> Runner<'a> {
     /// Creates a runner and registers it in the executor state.
-    fn new(state: &State) -> Runner<'_> {
-        let runner = Runner {
+    fn new(state: &'a State) -> Self {
+        let runner = Self {
             state,
             ticker: Ticker::new(state),
             local: Arc::new(ConcurrentQueue::bounded(512)),
