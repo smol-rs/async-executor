@@ -1,3 +1,8 @@
+# Version 2.0.0
+
+- Upstreaming of Hermit `no_std` patchset:
+  - Add minimal scaffolding for `std` feature (#161)
+
 # Version 1.13.3
 
 - Avoid places where the code had a possibility to block or panic. (#147)
