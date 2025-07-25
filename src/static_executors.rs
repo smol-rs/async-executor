@@ -1,6 +1,6 @@
 use crate::{debug_state, Executor, LocalExecutor, State};
 use alloc::boxed::Box;
-use async_task::{Builder, Runnable, Task};
+use async_task::{Runnable, Task};
 use core::{
     cell::UnsafeCell,
     fmt,
@@ -10,6 +10,7 @@ use core::{
     sync::atomic::Ordering,
 };
 use slab::Slab;
+#[cfg(feature = "std")]
 use std::sync::PoisonError;
 
 impl Executor<'static> {
@@ -191,9 +192,7 @@ impl StaticExecutor {
         &'static self,
         future: impl Future<Output = T> + Send + 'static,
     ) -> Task<T> {
-        let (runnable, task) = Builder::new()
-            .propagate_panic(true)
-            .spawn(|()| future, self.schedule());
+        let (runnable, task) = crate::new_builder().spawn(|()| future, self.schedule());
         runnable.schedule();
         task
     }
@@ -216,11 +215,8 @@ impl StaticExecutor {
         // - `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
         //    Therefore we do not need to worry about what is done with the
         //    `Waker`.
-        let (runnable, task) = unsafe {
-            Builder::new()
-                .propagate_panic(true)
-                .spawn_unchecked(|()| future, self.schedule())
-        };
+        let (runnable, task) =
+            unsafe { crate::new_builder().spawn_unchecked(|()| future, self.schedule()) };
         runnable.schedule();
         task
     }
@@ -373,10 +369,10 @@ impl StaticLocalExecutor {
     ///     println!("Hello world");
     /// });
     /// ```
+    // TODO: This feature constraint shouldn't be necessary.
+    #[cfg(feature = "std")]
     pub fn spawn<T: 'static>(&'static self, future: impl Future<Output = T> + 'static) -> Task<T> {
-        let (runnable, task) = Builder::new()
-            .propagate_panic(true)
-            .spawn_local(|()| future, self.schedule());
+        let (runnable, task) = crate::new_builder().spawn_local(|()| future, self.schedule());
         runnable.schedule();
         task
     }
@@ -405,11 +401,8 @@ impl StaticLocalExecutor {
         // - `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
         //    Therefore we do not need to worry about what is done with the
         //    `Waker`.
-        let (runnable, task) = unsafe {
-            Builder::new()
-                .propagate_panic(true)
-                .spawn_unchecked(|()| future, self.schedule())
-        };
+        let (runnable, task) =
+            unsafe { crate::new_builder().spawn_unchecked(|()| future, self.schedule()) };
         runnable.schedule();
         task
     }

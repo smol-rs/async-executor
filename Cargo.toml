@@ -2,8 +2,8 @@
 name = "async-executor"
 # When publishing a new version:
 # - Update CHANGELOG.md
-# - Create "v1.x.y" git tag
-version = "1.13.3"
+# - Create "v2.x.y" git tag
+version = "2.0.0"
 authors = ["Stjepan Glavina <stjepang@gmail.com>", "John Nunley <dev@notgull.net>"]
 edition = "2021"
 rust-version = "1.65"
@@ -15,16 +15,25 @@ categories = ["asynchronous", "concurrency"]
 exclude = ["/.*"]
 
 [features]
+default = ["std"]
 # Adds support for executors optimized for use in static variables.
 static = []
+# Note that disabling this feature doesn't yet work as expected,
+# but is present anyways to reduce divergence between no-std forks of this.
+std = [
+    "async-task/std",
+    "concurrent-queue/std",
+    "fastrand/std",
+    "slab/std",
+]
 
 [dependencies]
-async-task = "4.4.0"
-concurrent-queue = "2.5.0"
-fastrand = "2.0.0"
+async-task = { version = "4.4.0", default-features = false }
+concurrent-queue = { version = "2.5.0", default-features = false }
+fastrand = { version = "2.0.0", default-features = false, features = ["alloc"] }
 futures-lite = { version = "2.0.0", default-features = false }
 pin-project-lite = "0.2"
-slab = "0.4.7"
+slab = { version = "0.4.7", default-features = false }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 futures-lite = { version = "2.0.0", default-features = false, features = ["std"] }
