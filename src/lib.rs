@@ -52,9 +52,7 @@ use core::panic::{RefUnwindSafe, UnwindSafe};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use core::task::{Context, Poll, Waker};
-
-#[cfg(feature = "std")]
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
+use lock_api::{Mutex, MutexGuard, RawMutex, RawRwLock, RwLock};
 
 use async_task::{Builder, Runnable};
 use concurrent_queue::ConcurrentQueue;
@@ -95,29 +93,33 @@ pub use static_executors::*;
 ///         drop(signal);
 ///     }));
 /// ```
-pub struct Executor<'a> {
+pub struct Executor<'a, RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> {
     /// The executor state.
-    state: AtomicPtr<State>,
+    state: AtomicPtr<State<RM, RRL>>,
 
     /// Makes the `'a` lifetime invariant.
     _marker: PhantomData<core::cell::UnsafeCell<&'a ()>>,
 }
 
 // SAFETY: Executor stores no thread local state that can be accessed via other thread.
-unsafe impl Send for Executor<'_> {}
+unsafe impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> Send for Executor<'_, RM, RRL> {}
 // SAFETY: Executor internally synchronizes all of it's operations internally.
-unsafe impl Sync for Executor<'_> {}
+unsafe impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> Sync for Executor<'_, RM, RRL> {}
 
-impl UnwindSafe for Executor<'_> {}
-impl RefUnwindSafe for Executor<'_> {}
+impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> UnwindSafe for Executor<'_, RM, RRL> {}
+impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> RefUnwindSafe for Executor<'_, RM, RRL> {}
 
-impl fmt::Debug for Executor<'_> {
+impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> fmt::Debug for Executor<'_, RM, RRL> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         debug_executor(self, "Executor", f)
     }
 }
 
-impl<'a> Executor<'a> {
+impl<'a, RM, RRL> Executor<'a, RM, RRL>
+where
+    RM: RawMutex + Unpin + Send + Sync + 'static,
+    RRL: RawRwLock + Unpin + Send + Sync + 'static,
+{
     /// Creates a new executor.
     ///
     /// # Examples
@@ -249,7 +251,7 @@ impl<'a> Executor<'a> {
     ///
     /// If this is an `Executor`, `F` and `T` must be `Send`.
     unsafe fn spawn_inner<T: 'a>(
-        state: Pin<&'a State>,
+        state: Pin<&'a State<RM, RRL>>,
         future: impl Future<Output = T> + 'a,
         active: &mut Slab<Waker>,
     ) -> Task<T> {
@@ -355,7 +357,7 @@ impl<'a> Executor<'a> {
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(state: Pin<&'a State>) -> impl Fn(Runnable) + Send + Sync + 'a {
+    fn schedule(state: Pin<&'a State<RM, RRL>>) -> impl Fn(Runnable) + Send + Sync + 'a {
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             let result = state.queue.push(runnable);
@@ -366,9 +368,11 @@ impl<'a> Executor<'a> {
 
     /// Returns a pointer to the inner state.
     #[inline]
-    fn state(&self) -> Pin<&'a State> {
+    fn state(&self) -> Pin<&'a State<RM, RRL>> {
         #[cold]
-        fn alloc_state(atomic_ptr: &AtomicPtr<State>) -> *mut State {
+        fn alloc_state<RM: RawMutex, RRL: RawRwLock>(
+            atomic_ptr: &AtomicPtr<State<RM, RRL>>,
+        ) -> *mut State<RM, RRL> {
             let state = Arc::new(State::new());
             let ptr = Arc::into_raw(state).cast_mut();
             if let Err(actual) = atomic_ptr.compare_exchange(
@@ -396,7 +400,7 @@ impl<'a> Executor<'a> {
     }
 }
 
-impl Drop for Executor<'_> {
+impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> Drop for Executor<'_, RM, RRL> {
     fn drop(&mut self) {
         let ptr = *self.state.get_mut();
         if ptr.is_null() {
@@ -417,7 +421,11 @@ impl Drop for Executor<'_> {
     }
 }
 
-impl<'a> Default for Executor<'a> {
+impl<'a, RM, RRL> Default for Executor<'a, RM, RRL>
+where
+    RM: RawMutex + Unpin + Send + Sync + 'static,
+    RRL: RawRwLock + Unpin + Send + Sync + 'static,
+{
     fn default() -> Self {
         Self::new()
     }
@@ -439,24 +447,28 @@ impl<'a> Default for Executor<'a> {
 ///     println!("Hello world!");
 /// }));
 /// ```
-pub struct LocalExecutor<'a> {
+pub struct LocalExecutor<'a, RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> {
     /// The inner executor.
-    inner: Executor<'a>,
+    inner: Executor<'a, RM, RRL>,
 
     /// Makes the type `!Send` and `!Sync`.
     _marker: PhantomData<Rc<()>>,
 }
 
-impl UnwindSafe for LocalExecutor<'_> {}
-impl RefUnwindSafe for LocalExecutor<'_> {}
+impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> UnwindSafe for LocalExecutor<'_, RM, RRL> {}
+impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> RefUnwindSafe for LocalExecutor<'_, RM, RRL> {}
 
-impl fmt::Debug for LocalExecutor<'_> {
+impl<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin> fmt::Debug for LocalExecutor<'_, RM, RRL> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         debug_executor(&self.inner, "LocalExecutor", f)
     }
 }
 
-impl<'a> LocalExecutor<'a> {
+impl<'a, RM, RRL> LocalExecutor<'a, RM, RRL>
+where
+    RM: RawMutex + Unpin + Send + Sync + 'static,
+    RRL: RawRwLock + Unpin + Send + Sync + 'static,
+{
     /// Creates a single-threaded executor.
     ///
     /// # Examples
@@ -642,36 +654,40 @@ impl<'a> LocalExecutor<'a> {
     }
 
     /// Returns a reference to the inner executor.
-    fn inner(&self) -> &Executor<'a> {
+    fn inner(&self) -> &Executor<'a, RM, RRL> {
         &self.inner
     }
 }
 
-impl<'a> Default for LocalExecutor<'a> {
+impl<'a, RM, RRL> Default for LocalExecutor<'a, RM, RRL>
+where
+    RM: RawMutex + Unpin + Send + Sync + 'static,
+    RRL: RawRwLock + Unpin + Send + Sync + 'static,
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
 /// The state of a executor.
-struct State {
+struct State<RM, RRL> {
     /// The global queue.
     queue: ConcurrentQueue<Runnable>,
 
     /// Local queues created by runners.
-    local_queues: RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>,
+    local_queues: RwLock<RRL, Vec<Arc<ConcurrentQueue<Runnable>>>>,
 
     /// Set to `true` when a sleeping ticker is notified or no tickers are sleeping.
     notified: AtomicBool,
 
     /// A list of sleeping tickers.
-    sleepers: Mutex<Sleepers>,
+    sleepers: Mutex<RM, Sleepers>,
 
     /// Currently active tasks.
-    active: Mutex<Slab<Waker>>,
+    active: Mutex<RM, Slab<Waker>>,
 }
 
-impl State {
+impl<RM: RawMutex, RRL: RawRwLock> State<RM, RRL> {
     /// Creates state for a new executor.
     const fn new() -> Self {
         Self {
@@ -687,16 +703,17 @@ impl State {
         }
     }
 
-    fn pin(&self) -> Pin<&Self> {
+    fn pin(&self) -> Pin<&Self>
+    where
+        RM: Unpin,
+        RRL: Unpin,
+    {
         Pin::new(self)
     }
 
     /// Returns a reference to currently active tasks.
-    fn active(self: Pin<&Self>) -> MutexGuard<'_, Slab<Waker>> {
-        self.get_ref()
-            .active
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    fn active(self: Pin<&Self>) -> MutexGuard<'_, RM, Slab<Waker>> {
+        self.get_ref().active.lock()
     }
 
     /// Notifies a sleeping ticker.
@@ -707,11 +724,7 @@ impl State {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            let waker = self
-                .sleepers
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .notify();
+            let waker = self.sleepers.lock().notify();
             if let Some(w) = waker {
                 w.wake();
             }
@@ -836,9 +849,9 @@ impl Sleepers {
 }
 
 /// Runs task one by one.
-struct Ticker<'a> {
+struct Ticker<'a, RM: RawMutex, RRL: RawRwLock> {
     /// The executor state.
-    state: &'a State,
+    state: &'a State<RM, RRL>,
 
     /// Set to a non-zero sleeper ID when in sleeping state.
     ///
@@ -849,9 +862,9 @@ struct Ticker<'a> {
     sleeping: usize,
 }
 
-impl<'a> Ticker<'a> {
+impl<'a, RM: RawMutex, RRL: RawRwLock> Ticker<'a, RM, RRL> {
     /// Creates a ticker.
-    fn new(state: &'a State) -> Self {
+    fn new(state: &'a State<RM, RRL>) -> Self {
         Self { state, sleeping: 0 }
     }
 
@@ -859,11 +872,7 @@ impl<'a> Ticker<'a> {
     ///
     /// Returns `false` if the ticker was already sleeping and unnotified.
     fn sleep(&mut self, waker: &Waker) -> bool {
-        let mut sleepers = self
-            .state
-            .sleepers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut sleepers = self.state.sleepers.lock();
 
         match self.sleeping {
             // Move to sleeping state.
@@ -889,11 +898,7 @@ impl<'a> Ticker<'a> {
     /// Moves the ticker into woken state.
     fn wake(&mut self) {
         if self.sleeping != 0 {
-            let mut sleepers = self
-                .state
-                .sleepers
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut sleepers = self.state.sleepers.lock();
             sleepers.remove(self.sleeping);
 
             self.state
@@ -937,15 +942,11 @@ impl<'a> Ticker<'a> {
     }
 }
 
-impl Drop for Ticker<'_> {
+impl<RM: RawMutex, RRL: RawRwLock> Drop for Ticker<'_, RM, RRL> {
     fn drop(&mut self) {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         if self.sleeping != 0 {
-            let mut sleepers = self
-                .state
-                .sleepers
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut sleepers = self.state.sleepers.lock();
             let notified = sleepers.remove(self.sleeping);
 
             self.state
@@ -964,12 +965,12 @@ impl Drop for Ticker<'_> {
 /// A worker in a work-stealing executor.
 ///
 /// This is just a ticker that also has an associated local queue for improved cache locality.
-struct Runner<'a> {
+struct Runner<'a, RM: RawMutex, RRL: RawRwLock> {
     /// The executor state.
-    state: &'a State,
+    state: &'a State<RM, RRL>,
 
     /// Inner ticker.
-    ticker: Ticker<'a>,
+    ticker: Ticker<'a, RM, RRL>,
 
     /// The local queue.
     local: Arc<ConcurrentQueue<Runnable>>,
@@ -978,20 +979,16 @@ struct Runner<'a> {
     ticks: usize,
 }
 
-impl<'a> Runner<'a> {
+impl<'a, RM: RawMutex, RRL: RawRwLock> Runner<'a, RM, RRL> {
     /// Creates a runner and registers it in the executor state.
-    fn new(state: &'a State) -> Self {
+    fn new(state: &'a State<RM, RRL>) -> Self {
         let runner = Self {
             state,
             ticker: Ticker::new(state),
             local: Arc::new(ConcurrentQueue::bounded(512)),
             ticks: 0,
         };
-        state
-            .local_queues
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(runner.local.clone());
+        state.local_queues.write().push(runner.local.clone());
         runner
     }
 
@@ -1012,25 +1009,24 @@ impl<'a> Runner<'a> {
                 }
 
                 // Try stealing from other runners.
-                if let Ok(local_queues) = self.state.local_queues.try_read() {
-                    // Pick a random starting point in the iterator list and rotate the list.
-                    let n = local_queues.len();
-                    let start = rng.usize(..n);
-                    let iter = local_queues
-                        .iter()
-                        .chain(local_queues.iter())
-                        .skip(start)
-                        .take(n);
+                let local_queues = self.state.local_queues.read();
+                // Pick a random starting point in the iterator list and rotate the list.
+                let n = local_queues.len();
+                let start = rng.usize(..n);
+                let iter = local_queues
+                    .iter()
+                    .chain(local_queues.iter())
+                    .skip(start)
+                    .take(n);
 
-                    // Remove this runner's local queue.
-                    let iter = iter.filter(|local| !Arc::ptr_eq(local, &self.local));
+                // Remove this runner's local queue.
+                let iter = iter.filter(|local| !Arc::ptr_eq(local, &self.local));
 
-                    // Try stealing from each local queue in the list.
-                    for local in iter {
-                        steal(local, &self.local);
-                        if let Ok(r) = self.local.pop() {
-                            return Some(r);
-                        }
+                // Try stealing from each local queue in the list.
+                for local in iter {
+                    steal(local, &self.local);
+                    if let Ok(r) = self.local.pop() {
+                        return Some(r);
                     }
                 }
 
@@ -1050,13 +1046,12 @@ impl<'a> Runner<'a> {
     }
 }
 
-impl Drop for Runner<'_> {
+impl<RM: RawMutex, RRL: RawRwLock> Drop for Runner<'_, RM, RRL> {
     fn drop(&mut self) {
         // Remove the local queue.
         self.state
             .local_queues
             .write()
-            .unwrap_or_else(PoisonError::into_inner)
             .retain(|local| !Arc::ptr_eq(local, &self.local));
 
         // Re-schedule remaining tasks in the local queue.
@@ -1097,7 +1092,11 @@ fn steal<T>(src: &ConcurrentQueue<T>, dest: &ConcurrentQueue<T>) {
 }
 
 /// Debug implementation for `Executor` and `LocalExecutor`.
-fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn debug_executor<RM: RawMutex + Unpin, RRL: RawRwLock + Unpin>(
+    executor: &Executor<'_, RM, RRL>,
+    name: &str,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     // Get a reference to the state.
     let ptr = executor.state.load(Ordering::Acquire);
     if ptr.is_null() {
@@ -1122,45 +1121,46 @@ fn debug_executor(executor: &Executor<'_>, name: &str, f: &mut fmt::Formatter<'_
 }
 
 /// Debug implementation for `Executor` and `LocalExecutor`.
-fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn debug_state<RM: RawMutex, RRL: RawRwLock>(
+    state: &State<RM, RRL>,
+    name: &str,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     /// Debug wrapper for the number of active tasks.
-    struct ActiveTasks<'a>(&'a Mutex<Slab<Waker>>);
+    struct ActiveTasks<'a, RM>(&'a Mutex<RM, Slab<Waker>>);
 
-    impl fmt::Debug for ActiveTasks<'_> {
+    impl<RM: RawMutex> fmt::Debug for ActiveTasks<'_, RM> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.0.try_lock() {
-                Ok(lock) => fmt::Debug::fmt(&lock.len(), f),
-                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
-                Err(TryLockError::Poisoned(err)) => fmt::Debug::fmt(&err.into_inner().len(), f),
+                Some(lock) => fmt::Debug::fmt(&lock.len(), f),
+                None => f.write_str("<locked>"),
             }
         }
     }
 
     /// Debug wrapper for the local runners.
-    struct LocalRunners<'a>(&'a RwLock<Vec<Arc<ConcurrentQueue<Runnable>>>>);
+    struct LocalRunners<'a, RRL>(&'a RwLock<RRL, Vec<Arc<ConcurrentQueue<Runnable>>>>);
 
-    impl fmt::Debug for LocalRunners<'_> {
+    impl<RRL: RawRwLock> fmt::Debug for LocalRunners<'_, RRL> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.0.try_read() {
-                Ok(lock) => f
+                Some(lock) => f
                     .debug_list()
                     .entries(lock.iter().map(|queue| queue.len()))
                     .finish(),
-                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
-                Err(TryLockError::Poisoned(_)) => f.write_str("<poisoned>"),
+                None => f.write_str("<locked>"),
             }
         }
     }
 
     /// Debug wrapper for the sleepers.
-    struct SleepCount<'a>(&'a Mutex<Sleepers>);
+    struct SleepCount<'a, RM>(&'a Mutex<RM, Sleepers>);
 
-    impl fmt::Debug for SleepCount<'_> {
+    impl<RM: RawMutex> fmt::Debug for SleepCount<'_, RM> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.0.try_lock() {
-                Ok(lock) => fmt::Debug::fmt(&lock.count, f),
-                Err(TryLockError::WouldBlock) => f.write_str("<locked>"),
-                Err(TryLockError::Poisoned(_)) => f.write_str("<poisoned>"),
+                Some(lock) => fmt::Debug::fmt(&lock.count, f),
+                None => f.write_str("<locked>"),
             }
         }
     }
@@ -1208,17 +1208,21 @@ impl<Fut: Future, Cleanup: FnMut()> Future for AsyncCallOnDrop<Fut, Cleanup> {
     }
 }
 
-fn _ensure_send_and_sync() {
+fn _ensure_send_and_sync<RM, RRL>()
+where
+    RM: RawMutex + Unpin + Send + Sync + 'static,
+    RRL: RawRwLock + Unpin + Send + Sync + 'static,
+{
     use futures_lite::future::pending;
 
     fn is_send<T: Send>(_: T) {}
     fn is_sync<T: Sync>(_: T) {}
     fn is_static<T: 'static>(_: T) {}
 
-    is_send::<Executor<'_>>(Executor::new());
-    is_sync::<Executor<'_>>(Executor::new());
+    is_send::<Executor<'_, RM, RRL>>(Executor::new());
+    is_sync::<Executor<'_, RM, RRL>>(Executor::new());
 
-    let ex = Executor::new();
+    let ex = Executor::<'_, RM, RRL>::new();
     let state = ex.state();
     is_send(ex.run(pending::<()>()));
     is_sync(ex.run(pending::<()>()));

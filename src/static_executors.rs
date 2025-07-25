@@ -9,11 +9,14 @@ use core::{
     panic::{RefUnwindSafe, UnwindSafe},
     sync::atomic::Ordering,
 };
+use lock_api::{RawMutex, RawRwLock};
 use slab::Slab;
-#[cfg(feature = "std")]
-use std::sync::PoisonError;
 
-impl Executor<'static> {
+impl<RM, RRL> Executor<'static, RM, RRL>
+where
+    RM: RawMutex + Unpin + Send + Sync + 'static,
+    RRL: RawRwLock + Unpin + Send + Sync + 'static,
+{
     /// Consumes the [`Executor`] and intentionally leaks it.
     ///
     /// Largely equivalent to calling `Box::leak(Box::new(executor))`, but the produced
@@ -37,10 +40,10 @@ impl Executor<'static> {
     ///
     /// future::block_on(ex.run(task));
     /// ```
-    pub fn leak(self) -> &'static StaticExecutor {
+    pub fn leak(self) -> &'static StaticExecutor<RM, RRL> {
         let ptr = self.state.load(Ordering::Relaxed);
 
-        let state: &'static State = if ptr.is_null() {
+        let state: &'static State<RM, RRL> = if ptr.is_null() {
             Box::leak(Box::new(State::new()))
         } else {
             // SAFETY: So long as an Executor lives, it's state pointer will always be valid
@@ -51,7 +54,7 @@ impl Executor<'static> {
 
         core::mem::forget(self);
 
-        let mut active = state.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut active = state.active.lock();
         if !active.is_empty() {
             // Reschedule all of the active tasks.
             for waker in active.drain() {
@@ -63,12 +66,17 @@ impl Executor<'static> {
 
         // SAFETY: StaticExecutor has the same memory layout as State as it's repr(transparent).
         // The lifetime is not altered: 'static -> 'static.
-        let static_executor: &'static StaticExecutor = unsafe { core::mem::transmute(state) };
+        let static_executor: &'static StaticExecutor<RM, RRL> =
+            unsafe { core::mem::transmute(state) };
         static_executor
     }
 }
 
-impl LocalExecutor<'static> {
+impl<RM, RRL> LocalExecutor<'static, RM, RRL>
+where
+    RM: RawMutex + Unpin + Send + Sync + 'static,
+    RRL: RawRwLock + Unpin + Send + Sync + 'static,
+{
     /// Consumes the [`LocalExecutor`] and intentionally leaks it.
     ///
     /// Largely equivalent to calling `Box::leak(Box::new(executor))`, but the produced
@@ -92,10 +100,10 @@ impl LocalExecutor<'static> {
     ///
     /// future::block_on(ex.run(task));
     /// ```
-    pub fn leak(self) -> &'static StaticLocalExecutor {
+    pub fn leak(self) -> &'static StaticLocalExecutor<RM, RRL> {
         let ptr = self.inner.state.load(Ordering::Relaxed);
 
-        let state: &'static State = if ptr.is_null() {
+        let state: &'static State<RM, RRL> = if ptr.is_null() {
             Box::leak(Box::new(State::new()))
         } else {
             // SAFETY: So long as an Executor lives, it's state pointer will always be valid
@@ -106,7 +114,7 @@ impl LocalExecutor<'static> {
 
         core::mem::forget(self);
 
-        let mut active = state.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut active = state.active.lock();
         if !active.is_empty() {
             // Reschedule all of the active tasks.
             for waker in active.drain() {
@@ -118,7 +126,8 @@ impl LocalExecutor<'static> {
 
         // SAFETY: StaticLocalExecutor has the same memory layout as State as it's repr(transparent).
         // The lifetime is not altered: 'static -> 'static.
-        let static_executor: &'static StaticLocalExecutor = unsafe { core::mem::transmute(state) };
+        let static_executor: &'static StaticLocalExecutor<RM, RRL> =
+            unsafe { core::mem::transmute(state) };
         static_executor
     }
 }
@@ -138,25 +147,29 @@ impl LocalExecutor<'static> {
 ///
 /// [`static`]: https://doc.rust-lang.org/core/keyword.static.html
 #[repr(transparent)]
-pub struct StaticExecutor {
-    state: State,
+pub struct StaticExecutor<RM: RawMutex, RRL: RawRwLock> {
+    state: State<RM, RRL>,
 }
 
 // SAFETY: Executor stores no thread local state that can be accessed via other thread.
-unsafe impl Send for StaticExecutor {}
+unsafe impl<RM: RawMutex, RRL: RawRwLock> Send for StaticExecutor<RM, RRL> {}
 // SAFETY: Executor internally synchronizes all of it's operations internally.
-unsafe impl Sync for StaticExecutor {}
+unsafe impl<RM: RawMutex, RRL: RawRwLock> Sync for StaticExecutor<RM, RRL> {}
 
-impl UnwindSafe for StaticExecutor {}
-impl RefUnwindSafe for StaticExecutor {}
+impl<RM: RawMutex, RRL: RawRwLock> UnwindSafe for StaticExecutor<RM, RRL> {}
+impl<RM: RawMutex, RRL: RawRwLock> RefUnwindSafe for StaticExecutor<RM, RRL> {}
 
-impl fmt::Debug for StaticExecutor {
+impl<RM: RawMutex, RRL: RawRwLock> fmt::Debug for StaticExecutor<RM, RRL> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         debug_state(&self.state, "StaticExecutor", f)
     }
 }
 
-impl StaticExecutor {
+impl<RM, RRL> StaticExecutor<RM, RRL>
+where
+    RM: RawMutex + Send + Sync + 'static,
+    RRL: RawRwLock + Send + Sync + 'static,
+{
     /// Creates a new StaticExecutor.
     ///
     /// # Examples
@@ -289,7 +302,7 @@ impl StaticExecutor {
 
     /// Returns a function that schedules a runnable task when it gets woken up.
     fn schedule(&'static self) -> impl Fn(Runnable) + Send + Sync + 'static {
-        let state: &'static State = &self.state;
+        let state: &'static State<RM, RRL> = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             let result = state.queue.push(runnable);
@@ -299,7 +312,11 @@ impl StaticExecutor {
     }
 }
 
-impl Default for StaticExecutor {
+impl<RM, RRL> Default for StaticExecutor<RM, RRL>
+where
+    RM: RawMutex + Send + Sync + 'static,
+    RRL: RawRwLock + Send + Sync + 'static,
+{
     fn default() -> Self {
         Self::new()
     }
@@ -320,21 +337,25 @@ impl Default for StaticExecutor {
 ///
 /// [`thread_local]: https://doc.rust-lang.org/std/macro.thread_local.html
 #[repr(transparent)]
-pub struct StaticLocalExecutor {
-    state: State,
+pub struct StaticLocalExecutor<RM: RawMutex, RRL: RawRwLock> {
+    state: State<RM, RRL>,
     marker_: PhantomData<UnsafeCell<()>>,
 }
 
-impl UnwindSafe for StaticLocalExecutor {}
-impl RefUnwindSafe for StaticLocalExecutor {}
+impl<RM: RawMutex, RRL: RawRwLock> UnwindSafe for StaticLocalExecutor<RM, RRL> {}
+impl<RM: RawMutex, RRL: RawRwLock> RefUnwindSafe for StaticLocalExecutor<RM, RRL> {}
 
-impl fmt::Debug for StaticLocalExecutor {
+impl<RM: RawMutex, RRL: RawRwLock> fmt::Debug for StaticLocalExecutor<RM, RRL> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         debug_state(&self.state, "StaticLocalExecutor", f)
     }
 }
 
-impl StaticLocalExecutor {
+impl<RM, RRL> StaticLocalExecutor<RM, RRL>
+where
+    RM: RawMutex + Send + Sync + 'static,
+    RRL: RawRwLock + Send + Sync + 'static,
+{
     /// Creates a new StaticLocalExecutor.
     ///
     /// # Examples
@@ -372,7 +393,27 @@ impl StaticLocalExecutor {
     // TODO: This feature constraint shouldn't be necessary.
     #[cfg(feature = "std")]
     pub fn spawn<T: 'static>(&'static self, future: impl Future<Output = T> + 'static) -> Task<T> {
+        #[cfg(feature = "std")]
         let (runnable, task) = crate::new_builder().spawn_local(|()| future, self.schedule());
+
+        // SAFETY:
+        //
+        // - `future` is not `Send` but `StaticLocalExecutor` is `!Sync`,
+        //   `try_tick`, `tick` and `run` can only be called from the origin
+        //    thread of the `StaticLocalExecutor`. Similarly, `spawn_scoped` can only
+        //    be called from the origin thread, ensuring that `future` and the executor
+        //    share the same origin thread. The `Runnable` can be scheduled from other
+        //    threads, but because of the above `Runnable` can only be called or
+        //    dropped on the origin thread.
+        // - `future` is not `'static`, but the caller guarantees that the
+        //    task, and thus its `Runnable` must not live longer than `'a`.
+        // - `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
+        //    Therefore we do not need to worry about what is done with the
+        //    `Waker`.
+        #[cfg(not(feature = "std"))]
+        let (runnable, task) =
+            unsafe { crate::new_builder().spawn_unchecked(|()| future, self.schedule()) };
+
         runnable.schedule();
         task
     }
@@ -472,7 +513,7 @@ impl StaticLocalExecutor {
 
     /// Returns a function that schedules a runnable task when it gets woken up.
     fn schedule(&'static self) -> impl Fn(Runnable) + Send + Sync + 'static {
-        let state: &'static State = &self.state;
+        let state: &'static State<RM, RRL> = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             let result = state.queue.push(runnable);
@@ -482,7 +523,11 @@ impl StaticLocalExecutor {
     }
 }
 
-impl Default for StaticLocalExecutor {
+impl<RM, RRL> Default for StaticLocalExecutor<RM, RRL>
+where
+    RM: RawMutex + Send + Sync + 'static,
+    RRL: RawRwLock + Send + Sync + 'static,
+{
     fn default() -> Self {
         Self::new()
     }
