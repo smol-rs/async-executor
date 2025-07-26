@@ -1,3 +1,6 @@
+#![allow(clippy::incompatible_msrv)] // false positive: https://github.com/rust-lang/rust-clippy/issues/12257#issuecomment-2093667187
+
+use std::hint::black_box;
 use std::mem;
 use std::thread::available_parallelism;
 
@@ -380,7 +383,7 @@ fn running_benches(c: &mut Criterion) {
                                                     let (resp_send, resp_recv) =
                                                         async_channel::bounded(1);
                                                     db_send.send(resp_send).await.unwrap();
-                                                    criterion::black_box(
+                                                    black_box(
                                                         resp_recv.recv().await.unwrap(),
                                                     );
                                                 }
@@ -461,7 +464,7 @@ fn running_benches(c: &mut Criterion) {
                                                     let (resp_send, resp_recv) =
                                                         async_channel::bounded(1);
                                                     db_send.send(resp_send).await.unwrap();
-                                                    criterion::black_box(
+                                                    black_box(
                                                         resp_recv.recv().await.unwrap(),
                                                     );
                                                 }
