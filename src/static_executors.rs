@@ -417,11 +417,11 @@ impl StaticLocalExecutor {
         // `future` is not `'static`, but the caller guarantees that the
         //  task, and thus its `Runnable` must not live longer than `'a`.
         //
-        // `self.schedule()` is not `Send` nor `Sync`. As StaticLocalExecutor is not 
+        // `self.schedule()` is not `Send` nor `Sync`. As StaticLocalExecutor is not
         // `Send`, the `Waker` is guaranteed// to only be used on the same thread
         // it was spawned on.
         //
-        // `self.schedule()` is `'static`, and thus will outlive all borrowed 
+        // `self.schedule()` is `'static`, and thus will outlive all borrowed
         // variables in the future.
         let (runnable, task) = unsafe {
             Builder::new()

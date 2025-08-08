@@ -5,6 +5,7 @@ use futures_lite::future::{self, block_on};
 use futures_lite::prelude::*;
 
 use std::sync::Arc;
+use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 
@@ -99,7 +100,7 @@ fn do_run_local<Fut: Future<Output = ()>>(mut f: impl FnMut(Arc<LocalExecutor<'s
         stop_timeout
     };
 
-    let ex = Arc::new(LocalExecutor::new());
+    let ex = Rc::new(LocalExecutor::new());
 
     // Test 1: Use the `run` command.
     block_on(ex.run(f(ex.clone())));
