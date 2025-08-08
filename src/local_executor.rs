@@ -152,9 +152,9 @@ impl<'a> LocalExecutor<'a> {
         let mut active = self.state().active();
 
         // Convert the futures into tasks.
-        let tasks = futures.into_iter().map(move |future| {
-            self.spawn_inner(future, &mut active)
-        });
+        let tasks = futures
+            .into_iter()
+            .map(move |future| self.spawn_inner(future, &mut active));
 
         // Push the tasks to the user's collection.
         handles.extend(tasks);
@@ -190,16 +190,16 @@ impl<'a> LocalExecutor<'a> {
         // the `Executor` is drained of all of its runnables. This ensures that
         // runnables are dropped and this precondition is satisfied.
         //
-        // `self.schedule()` is not `Send` nor `Sync`. As LocalExecutor is not 
+        // `self.schedule()` is not `Send` nor `Sync`. As LocalExecutor is not
         // `Send`, the `Waker` is guaranteed// to only be used on the same thread
         // it was spawned on.
         //
-        // `self.schedule()` is `'static`, and thus will outlive all borrowed 
+        // `self.schedule()` is `'static`, and thus will outlive all borrowed
         // variables in the future.
         let (runnable, task) = unsafe {
             Builder::new()
-            .propagate_panic(true)
-            .spawn_unchecked(|()| future, self.schedule())
+                .propagate_panic(true)
+                .spawn_unchecked(|()| future, self.schedule())
         };
         entry.insert(runnable.waker());
 
@@ -407,7 +407,9 @@ impl State {
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
-                ticker.runnable().await.run();
+                for _ in 0..200 {
+                    ticker.runnable().await.run();
+                }
                 future::yield_now().await;
             }
         };
