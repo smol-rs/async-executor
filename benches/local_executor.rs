@@ -320,7 +320,7 @@ fn running_benches(c: &mut Criterion) {
                                         for _ in 0..web_rng.usize(STEPS / 2..STEPS) {
                                             let (resp_send, resp_recv) = async_channel::bounded(1);
                                             db_send.send(resp_send).await.unwrap();
-                                            criterion::black_box(resp_recv.recv().await.unwrap());
+                                            core::hint::black_box(resp_recv.recv().await.unwrap());
                                         }
 
                                         // Send the data back...
@@ -393,7 +393,7 @@ fn running_benches(c: &mut Criterion) {
                                         for _ in 0..web_rng.usize(STEPS / 2..STEPS) {
                                             let (resp_send, resp_recv) = async_channel::bounded(1);
                                             db_send.send(resp_send).await.unwrap();
-                                            criterion::black_box(resp_recv.recv().await.unwrap());
+                                            core::hint::black_box(resp_recv.recv().await.unwrap());
                                         }
 
                                         // Send the data back...

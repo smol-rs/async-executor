@@ -462,7 +462,9 @@ fn running_benches(c: &mut Criterion) {
                                                     let (resp_send, resp_recv) =
                                                         async_channel::bounded(1);
                                                     db_send.send(resp_send).await.unwrap();
-                                                    black_box(resp_recv.recv().await.unwrap());
+                                                    core::hint::black_box(
+                                                        resp_recv.recv().await.unwrap(),
+                                                    );
                                                 }
 
                                                 // Send the data back...
