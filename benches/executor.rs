@@ -380,7 +380,7 @@ fn running_benches(c: &mut Criterion) {
                                                     let (resp_send, resp_recv) =
                                                         async_channel::bounded(1);
                                                     db_send.send(resp_send).await.unwrap();
-                                                    criterion::black_box(
+                                                    core::hint::black_box(
                                                         resp_recv.recv().await.unwrap(),
                                                     );
                                                 }
@@ -461,7 +461,7 @@ fn running_benches(c: &mut Criterion) {
                                                     let (resp_send, resp_recv) =
                                                         async_channel::bounded(1);
                                                     db_send.send(resp_send).await.unwrap();
-                                                    criterion::black_box(
+                                                    core::hint::black_box(
                                                         resp_recv.recv().await.unwrap(),
                                                     );
                                                 }
