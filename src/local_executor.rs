@@ -83,6 +83,9 @@ impl<'a> LocalExecutor<'a> {
     /// assert!(local_ex.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
+        // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+        // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+        // values in `State`, including the active field.
         unsafe { &*self.state().active.get() }.is_empty()
     }
 
@@ -100,6 +103,9 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
+        // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+        // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+        // values in `State`, including the active field.
         let active = unsafe { &mut *self.state().active.get() };
         self.spawn_inner(future, active)
     }
@@ -149,6 +155,9 @@ impl<'a> LocalExecutor<'a> {
         futures: impl IntoIterator<Item = F>,
         handles: &mut impl Extend<Task<F::Output>>,
     ) {
+        // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+        // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+        // values in `State`, including the active field.
         let active = unsafe { &mut *self.state().active.get() };
 
         // Convert the futures into tasks.
@@ -171,6 +180,9 @@ impl<'a> LocalExecutor<'a> {
         let index = entry.key();
         let state = self.state_as_rc();
         let future = AsyncCallOnDrop::new(future, move || {
+            // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+            // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+            // values in `State`, including the active field.
             drop(unsafe { &mut *state.active.get() }.try_remove(index))
         });
 
@@ -276,9 +288,11 @@ impl<'a> LocalExecutor<'a> {
     fn schedule(&self) -> impl Fn(Runnable) + 'static {
         let state = self.state_as_rc();
 
-        // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             {
+                // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
+                // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+                // values in `State`, including the queue field.
                 let queue = unsafe { &mut *state.queue.get() };
                 queue.push_front(runnable);
             }
@@ -337,12 +351,18 @@ impl Drop for LocalExecutor<'_> {
         let state = unsafe { Rc::from_raw(ptr) };
 
         {
+            // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+            // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+            // values in `State`, including the active field.
             let active = unsafe { &mut *state.active.get() };
             for w in active.drain() {
                 w.wake();
             }
         }
 
+        // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
+        // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+        // values in `State`, including the queue field.
         unsafe { &mut *state.queue.get() }.clear();
     }
 }
@@ -382,6 +402,9 @@ impl State {
     /// Notifies a sleeping ticker.
     #[inline]
     pub(crate) fn notify(&self) {
+        // SAFETY: All UnsafeCell accesses to sleepers are tightly scoped, and because
+        // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+        // values in `State`, including the sleepers field.
         let waker = unsafe { &mut *self.sleepers.get() }.notify();
         if let Some(w) = waker {
             w.wake();
@@ -389,6 +412,9 @@ impl State {
     }
 
     pub(crate) fn try_tick(&self) -> bool {
+        // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
+        // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+        // values in `State`, including the queue field.
         let runnable = unsafe { &mut *self.queue.get() }.pop_back();
         match runnable {
             None => false,
@@ -449,12 +475,18 @@ impl Ticker<'_> {
         match self.sleeping {
             // Move to sleeping state.
             0 => {
+                // SAFETY: All UnsafeCell accesses to sleepers are tightly scoped, and because
+                // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+                // values in `State`, including the sleepers field.
                 let sleepers = unsafe { &mut *self.state.sleepers.get() };
                 self.sleeping = sleepers.insert(waker);
             }
 
             // Already sleeping, check if notified.
             id => {
+                // SAFETY: All UnsafeCell accesses to sleepers are tightly scoped, and because
+                // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+                // values in `State`, including the sleepers field.
                 let sleepers = unsafe { &mut *self.state.sleepers.get() };
                 if !sleepers.update(id, waker) {
                     return false;
@@ -468,6 +500,9 @@ impl Ticker<'_> {
     /// Moves the ticker into woken state.
     fn wake(&mut self) {
         if self.sleeping != 0 {
+            // SAFETY: All UnsafeCell accesses to sleepers are tightly scoped, and because
+            // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+            // values in `State`, including the sleepers field.
             let sleepers = unsafe { &mut *self.state.sleepers.get() };
             sleepers.remove(self.sleeping);
         }
@@ -478,6 +513,9 @@ impl Ticker<'_> {
     async fn runnable(&mut self) -> Runnable {
         future::poll_fn(|cx| {
             loop {
+                // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
+                // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+                // values in `State`, including the queue field.
                 match unsafe { &mut *self.state.queue.get() }.pop_back() {
                     None => {
                         // Move to sleeping and unnotified state.
@@ -504,6 +542,9 @@ impl Drop for Ticker<'_> {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         if self.sleeping != 0 {
             let notified = {
+                // SAFETY: All UnsafeCell accesses to sleepers are tightly scoped, and because
+                // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+                // values in `State`, including the sleepers field.
                 let sleepers = unsafe { &mut *self.state.sleepers.get() };
                 sleepers.remove(self.sleeping)
             };
@@ -552,6 +593,9 @@ pub(crate) fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>)
 
     impl fmt::Debug for ActiveTasks<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+            // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+            // values in `State`, including the active field.
             let active = unsafe { &*self.0.get() };
             fmt::Debug::fmt(&active.len(), f)
         }
@@ -562,6 +606,9 @@ pub(crate) fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>)
 
     impl fmt::Debug for SleepCount<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            // SAFETY: All UnsafeCell accesses to sleepers are tightly scoped, and because
+            // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+            // values in `State`, including the sleepers field.
             let sleepers = unsafe { &*self.0.get() };
             fmt::Debug::fmt(&sleepers.count, f)
         }
@@ -569,6 +616,9 @@ pub(crate) fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>)
 
     f.debug_struct(name)
         .field("active", &ActiveTasks(&state.active))
+        // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
+        // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+        // values in `State`, including the queue field.
         .field("global_tasks", &unsafe { &*state.queue.get() }.len())
         .field("sleepers", &SleepCount(&state.sleepers))
         .finish()
