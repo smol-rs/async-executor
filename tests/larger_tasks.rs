@@ -4,8 +4,8 @@ use async_executor::{Executor, LocalExecutor};
 use futures_lite::future::{self, block_on};
 use futures_lite::prelude::*;
 
-use std::sync::Arc;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -81,7 +81,7 @@ fn do_run<Fut: Future<Output = ()>>(mut f: impl FnMut(Arc<Executor<'static>>) ->
     });
 }
 
-fn do_run_local<Fut: Future<Output = ()>>(mut f: impl FnMut(Arc<LocalExecutor<'static>>) -> Fut) {
+fn do_run_local<Fut: Future<Output = ()>>(mut f: impl FnMut(Rc<LocalExecutor<'static>>) -> Fut) {
     // This should not run for longer than two minutes.
     #[cfg(not(miri))]
     let _stop_timeout = {
