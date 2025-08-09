@@ -93,14 +93,16 @@ impl LocalExecutor<'static> {
 
         std::mem::forget(self);
 
-        let mut active = state.active();
-        if !active.is_empty() {
-            // Reschedule all of the active tasks.
-            for waker in active.drain() {
-                waker.wake();
+        {
+            let active = unsafe { &mut *state.active.get() };
+            if !active.is_empty() {
+                // Reschedule all of the active tasks.
+                for waker in active.drain() {
+                    waker.wake();
+                }
+                // Overwrite to ensure that the slab is deallocated.
+                *active = Slab::new();
             }
-            // Overwrite to ensure that the slab is deallocated.
-            *active = Slab::new();
         }
 
         // SAFETY: StaticLocalExecutor has the same memory layout as State as it's repr(transparent).
@@ -500,7 +502,10 @@ impl StaticLocalExecutor {
         let state: &'static LocalState = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            state.queue.borrow_mut().push_front(runnable);
+            {
+                let queue = unsafe { &mut *state.queue.get() };
+                queue.push_front(runnable);
+            }
             state.notify();
         }
     }
