@@ -1,3 +1,6 @@
+#![allow(clippy::incompatible_msrv)] // false positive: https://github.com/rust-lang/rust-clippy/issues/12257#issuecomment-2093667187
+
+use std::hint::black_box;
 use std::mem;
 use std::thread::available_parallelism;
 
