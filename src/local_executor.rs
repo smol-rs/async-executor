@@ -1,4 +1,4 @@
-use std::cell::{BorrowError, Cell, RefCell, RefMut};
+use std::cell::{Cell, UnsafeCell};
 use std::collections::VecDeque;
 use std::fmt;
 use std::marker::PhantomData;
@@ -83,7 +83,7 @@ impl<'a> LocalExecutor<'a> {
     /// assert!(local_ex.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.state().active().is_empty()
+        unsafe { &*self.state().active.get() }.is_empty()
     }
 
     /// Spawns a task onto the executor.
@@ -100,8 +100,8 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
-        let mut active = self.state().active();
-        self.spawn_inner(future, &mut active)
+        let active = unsafe { &mut *self.state().active.get() };
+        self.spawn_inner(future, active)
     }
 
     /// Spawns many tasks onto the executor.
@@ -149,12 +149,12 @@ impl<'a> LocalExecutor<'a> {
         futures: impl IntoIterator<Item = F>,
         handles: &mut impl Extend<Task<F::Output>>,
     ) {
-        let mut active = self.state().active();
+        let active = unsafe { &mut *self.state().active.get() };
 
         // Convert the futures into tasks.
         let tasks = futures
             .into_iter()
-            .map(move |future| self.spawn_inner(future, &mut active));
+            .map(move |future| self.spawn_inner(future, active));
 
         // Push the tasks to the user's collection.
         handles.extend(tasks);
@@ -170,7 +170,9 @@ impl<'a> LocalExecutor<'a> {
         let entry = active.vacant_entry();
         let index = entry.key();
         let state = self.state_as_rc();
-        let future = AsyncCallOnDrop::new(future, move || drop(state.active().try_remove(index)));
+        let future = AsyncCallOnDrop::new(future, move || {
+            drop(unsafe { &mut *state.active.get() }.try_remove(index))
+        });
 
         // Create the task and register it in the set of active tasks.
         //
@@ -276,7 +278,10 @@ impl<'a> LocalExecutor<'a> {
 
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            state.queue.borrow_mut().push_front(runnable);
+            {
+                let queue = unsafe { &mut *state.queue.get() };
+                queue.push_front(runnable);
+            }
             state.notify();
         }
     }
@@ -331,13 +336,14 @@ impl Drop for LocalExecutor<'_> {
         // via Arc::into_raw in state_ptr.
         let state = unsafe { Rc::from_raw(ptr) };
 
-        let mut active = state.active();
-        for w in active.drain() {
-            w.wake();
+        {
+            let active = unsafe { &mut *state.active.get() };
+            for w in active.drain() {
+                w.wake();
+            }
         }
-        drop(active);
 
-        state.queue.borrow_mut().clear();
+        unsafe { &mut *state.queue.get() }.clear();
     }
 }
 
@@ -350,44 +356,41 @@ impl<'a> Default for LocalExecutor<'a> {
 /// The state of a executor.
 pub(crate) struct State {
     /// The global queue.
-    pub(crate) queue: RefCell<VecDeque<Runnable>>,
+    pub(crate) queue: UnsafeCell<VecDeque<Runnable>>,
 
     /// A list of sleeping tickers.
-    sleepers: RefCell<Sleepers>,
+    sleepers: UnsafeCell<Sleepers>,
 
     /// Currently active tasks.
-    active: RefCell<Slab<Waker>>,
+    pub(crate) active: UnsafeCell<Slab<Waker>>,
 }
 
 impl State {
     /// Creates state for a new executor.
     pub(crate) const fn new() -> State {
         State {
-            queue: RefCell::new(VecDeque::new()),
-            sleepers: RefCell::new(Sleepers {
+            queue: UnsafeCell::new(VecDeque::new()),
+            sleepers: UnsafeCell::new(Sleepers {
                 count: 0,
                 wakers: Vec::new(),
                 free_ids: Vec::new(),
             }),
-            active: RefCell::new(Slab::new()),
+            active: UnsafeCell::new(Slab::new()),
         }
-    }
-
-    /// Returns a reference to currently active tasks.
-    pub(crate) fn active(&self) -> RefMut<'_, Slab<Waker>> {
-        self.active.borrow_mut()
     }
 
     /// Notifies a sleeping ticker.
     #[inline]
     pub(crate) fn notify(&self) {
-        if let Some(w) = self.sleepers.borrow_mut().notify() {
+        let waker = unsafe { &mut *self.sleepers.get() }.notify();
+        if let Some(w) = waker {
             w.wake();
         }
     }
 
     pub(crate) fn try_tick(&self) -> bool {
-        match self.queue.borrow_mut().pop_back() {
+        let runnable = unsafe { &mut *self.queue.get() }.pop_back();
+        match runnable {
             None => false,
             Some(runnable) => {
                 // Run the task.
@@ -443,16 +446,16 @@ impl Ticker<'_> {
     ///
     /// Returns `false` if the ticker was already sleeping and unnotified.
     fn sleep(&mut self, waker: &Waker) -> bool {
-        let mut sleepers = self.state.sleepers.borrow_mut();
-
         match self.sleeping {
             // Move to sleeping state.
             0 => {
+                let sleepers = unsafe { &mut *self.state.sleepers.get() };
                 self.sleeping = sleepers.insert(waker);
             }
 
             // Already sleeping, check if notified.
             id => {
+                let sleepers = unsafe { &mut *self.state.sleepers.get() };
                 if !sleepers.update(id, waker) {
                     return false;
                 }
@@ -465,7 +468,8 @@ impl Ticker<'_> {
     /// Moves the ticker into woken state.
     fn wake(&mut self) {
         if self.sleeping != 0 {
-            self.state.sleepers.borrow_mut().remove(self.sleeping);
+            let sleepers = unsafe { &mut *self.state.sleepers.get() };
+            sleepers.remove(self.sleeping);
         }
         self.sleeping = 0;
     }
@@ -474,7 +478,7 @@ impl Ticker<'_> {
     async fn runnable(&mut self) -> Runnable {
         future::poll_fn(|cx| {
             loop {
-                match self.state.queue.borrow_mut().pop_back() {
+                match unsafe { &mut *self.state.queue.get() }.pop_back() {
                     None => {
                         // Move to sleeping and unnotified state.
                         if !self.sleep(cx.waker()) {
@@ -499,12 +503,13 @@ impl Drop for Ticker<'_> {
     fn drop(&mut self) {
         // If this ticker is in sleeping state, it must be removed from the sleepers list.
         if self.sleeping != 0 {
-            let mut sleepers = self.state.sleepers.borrow_mut();
-            let notified = sleepers.remove(self.sleeping);
+            let notified = {
+                let sleepers = unsafe { &mut *self.state.sleepers.get() };
+                sleepers.remove(self.sleeping)
+            };
 
             // If this ticker was notified, then notify another ticker.
             if notified {
-                drop(sleepers);
                 self.state.notify();
             }
         }
@@ -543,32 +548,28 @@ fn debug_executor(
 /// Debug implementation for `Executor` and `LocalExecutor`.
 pub(crate) fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     /// Debug wrapper for the number of active tasks.
-    struct ActiveTasks<'a>(&'a RefCell<Slab<Waker>>);
+    struct ActiveTasks<'a>(&'a UnsafeCell<Slab<Waker>>);
 
     impl fmt::Debug for ActiveTasks<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self.0.try_borrow() {
-                Ok(lock) => fmt::Debug::fmt(&lock.len(), f),
-                Err(BorrowError { .. }) => f.write_str("<blocked>"),
-            }
+            let active = unsafe { &*self.0.get() };
+            fmt::Debug::fmt(&active.len(), f)
         }
     }
 
     /// Debug wrapper for the sleepers.
-    struct SleepCount<'a>(&'a RefCell<Sleepers>);
+    struct SleepCount<'a>(&'a UnsafeCell<Sleepers>);
 
     impl fmt::Debug for SleepCount<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self.0.try_borrow() {
-                Ok(sleepers) => fmt::Debug::fmt(&sleepers.count, f),
-                Err(BorrowError { .. }) => f.write_str("<blocked>"),
-            }
+            let sleepers = unsafe { &*self.0.get() };
+            fmt::Debug::fmt(&sleepers.count, f)
         }
     }
 
     f.debug_struct(name)
         .field("active", &ActiveTasks(&state.active))
-        .field("global_tasks", &state.queue.borrow().len())
+        .field("global_tasks", &unsafe { &*state.queue.get() }.len())
         .field("sleepers", &SleepCount(&state.sleepers))
         .finish()
 }
