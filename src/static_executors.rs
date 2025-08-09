@@ -94,6 +94,9 @@ impl LocalExecutor<'static> {
         std::mem::forget(self);
 
         {
+            // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+            // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+            // values in `State`, including the active field.
             let active = unsafe { &mut *state.active.get() };
             if !active.is_empty() {
                 // Reschedule all of the active tasks.
@@ -500,9 +503,11 @@ impl StaticLocalExecutor {
     /// Returns a function that schedules a runnable task when it gets woken up.
     fn schedule(&'static self) -> impl Fn(Runnable) + 'static {
         let state: &'static LocalState = &self.state;
-        // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             {
+                // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
+                // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+                // values in `State`, including the queue field.
                 let queue = unsafe { &mut *state.queue.get() };
                 queue.push_front(runnable);
             }
