@@ -431,13 +431,19 @@ impl State {
     }
 
     pub async fn run<T>(&self, future: impl Future<Output = T>) -> T {
-        let mut ticker = Ticker::new(self);
-
         // A future that runs tasks forever.
         let run_forever = async {
             loop {
                 for _ in 0..200 {
-                    ticker.runnable().await.run();
+                    // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
+                    // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+                    // values in `State`, including the queue field.
+                    match unsafe { &mut *self.queue.get() }.pop_back() {
+                        Some(runnable) => {
+                            runnable.run();
+                        }
+                        None => break,
+                    }
                 }
                 future::yield_now().await;
             }
