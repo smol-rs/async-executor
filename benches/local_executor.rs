@@ -1,5 +1,5 @@
-use std::mem;
 use std::hint::black_box;
+use std::mem;
 
 use async_executor::{Executor, LocalExecutor, StaticLocalExecutor};
 use criterion::{criterion_group, criterion_main, Criterion};
