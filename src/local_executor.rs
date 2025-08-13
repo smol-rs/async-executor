@@ -35,7 +35,7 @@ pub struct LocalExecutor<'a> {
     state: Cell<*mut State>,
 
     /// Makes the `'a` lifetime invariant.
-    _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
+    _marker: PhantomData<UnsafeCell<&'a ()>>,
 }
 
 impl UnwindSafe for LocalExecutor<'_> {}
