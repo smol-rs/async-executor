@@ -6,7 +6,7 @@ use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
 use std::task::{Poll, Waker};
 
-use async_task::{Builder, Runnable};
+use async_task::{Builder, Runnable, Schedule};
 use futures_lite::{future, prelude::*};
 use slab::Slab;
 
@@ -103,11 +103,13 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
+        let state = self.state_as_rc();
         // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
         // `LocalExecutor` is !Send, there is no way to have concurrent access to the
         // values in `State`, including the active field.
         let active = unsafe { &mut *self.state().active.get() };
-        self.spawn_inner(future, active)
+        let schedule = Self::schedule(state.clone());
+        Self::spawn_inner(state, future, active, schedule)
     }
 
     /// Spawns many tasks onto the executor.
@@ -155,15 +157,20 @@ impl<'a> LocalExecutor<'a> {
         futures: impl IntoIterator<Item = F>,
         handles: &mut impl Extend<Task<F::Output>>,
     ) {
-        // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
-        // `LocalExecutor` is !Send, there is no way to have concurrent access to the
-        // values in `State`, including the active field.
-        let active = unsafe { &mut *self.state().active.get() };
+        let tasks = {
+            let state = self.state_as_rc();
 
-        // Convert the futures into tasks.
-        let tasks = futures
-            .into_iter()
-            .map(move |future| self.spawn_inner(future, active));
+            // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+            // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+            // values in `State`, including the active field.
+            let active = unsafe { &mut *state.active.get() };
+
+            // Convert the futures into tasks.
+            futures.into_iter().map(move |future| {
+                let schedule = Self::schedule(state.clone());
+                Self::spawn_inner(state.clone(), future, active, schedule)
+            })
+        };
 
         // Push the tasks to the user's collection.
         handles.extend(tasks);
@@ -171,14 +178,14 @@ impl<'a> LocalExecutor<'a> {
 
     /// Spawn a future while holding the inner lock.
     fn spawn_inner<T: 'a>(
-        &self,
+        state: Rc<State>,
         future: impl Future<Output = T> + 'a,
         active: &mut Slab<Waker>,
+        schedule: impl Schedule + 'static,
     ) -> Task<T> {
         // Remove the task from the set of active tasks when the future finishes.
         let entry = active.vacant_entry();
         let index = entry.key();
-        let state = self.state_as_rc();
         let future = AsyncCallOnDrop::new(future, move || {
             // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
             // `LocalExecutor` is !Send, there is no way to have concurrent access to the
@@ -204,16 +211,16 @@ impl<'a> LocalExecutor<'a> {
         // the `Executor` is drained of all of its runnables. This ensures that
         // runnables are dropped and this precondition is satisfied.
         //
-        // `self.schedule()` is not `Send` nor `Sync`. As LocalExecutor is not
+        // `schedule` is not `Send` nor `Sync`. As LocalExecutor is not
         // `Send`, the `Waker` is guaranteed// to only be used on the same thread
         // it was spawned on.
         //
-        // `self.schedule()` is `'static`, and thus will outlive all borrowed
+        // `schedule` is `'static`, and thus will outlive all borrowed
         // variables in the future.
         let (runnable, task) = unsafe {
             Builder::new()
                 .propagate_panic(true)
-                .spawn_unchecked(|()| future, self.schedule())
+                .spawn_unchecked(|()| future, schedule)
         };
         entry.insert(runnable.waker());
 
@@ -285,9 +292,7 @@ impl<'a> LocalExecutor<'a> {
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(&self) -> impl Fn(Runnable) + 'static {
-        let state = self.state_as_rc();
-
+    fn schedule(state: Rc<State>) -> impl Fn(Runnable) + 'static {
         move |runnable| {
             {
                 // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
