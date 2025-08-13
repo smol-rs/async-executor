@@ -327,11 +327,11 @@ impl<'a> LocalExecutor<'a> {
         unsafe { &*self.state_ptr() }
     }
 
-    // Clones the inner state Arc
+    // Clones the inner state Rc
     #[inline]
     fn state_as_rc(&self) -> Rc<State> {
         // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be a valid
-        // Arc when accessed through state_ptr.
+        // Rc when accessed through state_ptr.
         let rc = unsafe { Rc::from_raw(self.state_ptr()) };
         let clone = rc.clone();
         std::mem::forget(rc);
@@ -346,8 +346,8 @@ impl Drop for LocalExecutor<'_> {
             return;
         }
 
-        // SAFETY: As ptr is not null, it was allocated via Arc::new and converted
-        // via Arc::into_raw in state_ptr.
+        // SAFETY: As ptr is not null, it was allocated via Rc::new and converted
+        // via Rc::into_raw in state_ptr.
         let state = unsafe { Rc::from_raw(ptr) };
 
         {
@@ -585,7 +585,7 @@ fn debug_executor(
     }
 
     // SAFETY: If the state pointer is not null, it must have been
-    // allocated properly by Arc::new and converted via Arc::into_raw
+    // allocated properly by Rc::new and converted via Rc::into_raw
     // in state_ptr.
     let state = unsafe { &*ptr };
 
