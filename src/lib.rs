@@ -274,7 +274,7 @@ impl<'a> Executor<'a> {
         // Therefore we do not need to worry about what is done with the
         // `Waker`.
         //
-        // `Self::schedule` is not `'a`, but we make sure that the `Waker` does
+        // `Self::schedule` may not be k`'static`, but we make sure that the `Waker` does
         // not outlive `'a`. When the executor is dropped, the `active` field is
         // drained and all of the `Waker`s are woken.
         let (runnable, task) = Builder::new()

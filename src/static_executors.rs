@@ -5,9 +5,9 @@ use std::{
     cell::UnsafeCell,
     fmt,
     future::Future,
-    sync::atomic::Ordering,
     marker::PhantomData,
     panic::{RefUnwindSafe, UnwindSafe},
+    sync::atomic::Ordering,
 };
 
 impl Executor<'static> {
