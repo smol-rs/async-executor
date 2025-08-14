@@ -3,10 +3,11 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Poll, Waker};
 
-use async_task::{Builder, Runnable, Schedule};
+use async_task::{Builder, Runnable};
 use futures_lite::{future, prelude::*};
 use slab::Slab;
 
@@ -103,13 +104,12 @@ impl<'a> LocalExecutor<'a> {
     /// });
     /// ```
     pub fn spawn<T: 'a>(&self, future: impl Future<Output = T> + 'a) -> Task<T> {
-        let state = self.state_as_rc();
+        let state = self.state();
         // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
         // `LocalExecutor` is !Send, there is no way to have concurrent access to the
         // values in `State`, including the active field.
         let active = unsafe { &mut *self.state().active.get() };
-        let schedule = Self::schedule(state.clone());
-        Self::spawn_inner(state, future, active, schedule)
+        Self::spawn_inner(state, future, active)
     }
 
     /// Spawns many tasks onto the executor.
@@ -158,7 +158,7 @@ impl<'a> LocalExecutor<'a> {
         handles: &mut impl Extend<Task<F::Output>>,
     ) {
         let tasks = {
-            let state = self.state_as_rc();
+            let state = self.state();
 
             // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
             // `LocalExecutor` is !Send, there is no way to have concurrent access to the
@@ -166,10 +166,9 @@ impl<'a> LocalExecutor<'a> {
             let active = unsafe { &mut *state.active.get() };
 
             // Convert the futures into tasks.
-            futures.into_iter().map(move |future| {
-                let schedule = Self::schedule(state.clone());
-                Self::spawn_inner(state.clone(), future, active, schedule)
-            })
+            futures
+                .into_iter()
+                .map(move |future| Self::spawn_inner(state, future, active))
         };
 
         // Push the tasks to the user's collection.
@@ -178,10 +177,9 @@ impl<'a> LocalExecutor<'a> {
 
     /// Spawn a future while holding the inner lock.
     fn spawn_inner<T: 'a>(
-        state: Rc<State>,
+        state: Pin<&'a State>,
         future: impl Future<Output = T> + 'a,
         active: &mut Slab<Waker>,
-        schedule: impl Schedule + 'static,
     ) -> Task<T> {
         // Remove the task from the set of active tasks when the future finishes.
         let entry = active.vacant_entry();
@@ -220,7 +218,7 @@ impl<'a> LocalExecutor<'a> {
         let (runnable, task) = unsafe {
             Builder::new()
                 .propagate_panic(true)
-                .spawn_unchecked(|()| future, schedule)
+                .spawn_unchecked(|()| future, Self::schedule(state))
         };
         entry.insert(runnable.waker());
 
@@ -292,7 +290,7 @@ impl<'a> LocalExecutor<'a> {
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(state: Rc<State>) -> impl Fn(Runnable) + 'static {
+    fn schedule(state: Pin<&'a State>) -> impl Fn(Runnable) + 'a {
         move |runnable| {
             {
                 // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
@@ -307,12 +305,12 @@ impl<'a> LocalExecutor<'a> {
 
     /// Returns a pointer to the inner state.
     #[inline]
-    pub(crate) fn state_ptr(&self) -> *const State {
+    pub(crate) fn state(&self) -> Pin<&'a State> {
         #[cold]
         fn alloc_state(cell: &Cell<*mut State>) -> *mut State {
             debug_assert!(cell.get().is_null());
             let state = Rc::new(State::new());
-            let ptr = Rc::into_raw(state) as *mut State;
+            let ptr = Rc::into_raw(state).cast_mut();
             cell.set(ptr);
             ptr
         }
@@ -321,26 +319,10 @@ impl<'a> LocalExecutor<'a> {
         if ptr.is_null() {
             ptr = alloc_state(&self.state);
         }
-        ptr
-    }
 
-    /// Returns a reference to the inner state.
-    #[inline]
-    fn state(&self) -> &State {
         // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be valid
         // when accessed through state_ptr.
-        unsafe { &*self.state_ptr() }
-    }
-
-    // Clones the inner state Rc
-    #[inline]
-    fn state_as_rc(&self) -> Rc<State> {
-        // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be a valid
-        // Rc when accessed through state_ptr.
-        let rc = unsafe { Rc::from_raw(self.state_ptr()) };
-        let clone = rc.clone();
-        std::mem::forget(rc);
-        clone
+        Pin::new(unsafe { &*ptr })
     }
 }
 
