@@ -88,7 +88,7 @@ impl LocalExecutor<'static> {
         let ptr = self.state.get();
 
         let state: &'static LocalState = if ptr.is_null() {
-            Box::leak(Box::new(LocalState::new())) 
+            Box::leak(Box::new(LocalState::new()))
         } else {
             // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be valid
             // when accessed through state_ptr. This executor will live for the full 'static
