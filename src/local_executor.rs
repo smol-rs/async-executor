@@ -213,8 +213,9 @@ impl<'a> LocalExecutor<'a> {
         // `Send`, the `Waker` is guaranteed// to only be used on the same thread
         // it was spawned on.
         //
-        // `schedule` is `'static`, and thus will outlive all borrowed
-        // variables in the future.
+        // `Self::schedule` may not be `'static`, but we make sure that the `Waker` does
+        // not outlive `'a`. When the executor is dropped, the `active` field is
+        // drained and all of the `Waker`s are woken.
         let (runnable, task) = unsafe {
             Builder::new()
                 .propagate_panic(true)
