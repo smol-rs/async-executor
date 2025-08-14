@@ -1,17 +1,17 @@
 use std::cell::{Cell, UnsafeCell};
 use std::collections::VecDeque;
-use std::fmt;
 use std::marker::PhantomData;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Poll, Waker};
+use std::{fmt, mem};
 
 use async_task::{Builder, Runnable};
 use futures_lite::{future, prelude::*};
 use slab::Slab;
 
-use crate::{AsyncCallOnDrop, Sleepers};
+use crate::{AbortOnPanic, AsyncCallOnDrop, Sleepers};
 #[doc(no_inline)]
 pub use async_task::Task;
 
@@ -184,6 +184,8 @@ impl<'a> LocalExecutor<'a> {
         // Remove the task from the set of active tasks when the future finishes.
         let entry = active.vacant_entry();
         let index = entry.key();
+        let builder = Builder::new().propagate_panic(true);
+
         let future = AsyncCallOnDrop::new(future, move || {
             // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
             // `LocalExecutor` is !Send, there is no way to have concurrent access to the
@@ -191,39 +193,46 @@ impl<'a> LocalExecutor<'a> {
             drop(unsafe { &mut *state.active.get() }.try_remove(index))
         });
 
-        // Create the task and register it in the set of active tasks.
+        // This is a critical section which will result in UB by aliasing active
+        // if the AsyncCallOnDrop is called while still in this function.
         //
-        // SAFETY:
-        //
-        // `future` may not `Send`. Since `LocalExecutor` is `!Sync`,
-        // `try_tick`, `tick` and `run` can only be called from the origin
-        // thread of the `LocalExecutor`. Similarly, `spawn` can only  be called
-        // from the origin thread, ensuring that `future` and the executor share
-        // the same origin thread. The `Runnable` can be scheduled from other
-        // threads, but because of the above `Runnable` can only be called or
-        // dropped on the origin thread.
-        //
-        // `future` is not `'static`, but we make sure that the `Runnable` does
-        // not outlive `'a`. When the executor is dropped, the `active` field is
-        // drained and all of the `Waker`s are woken. Then, the queue inside of
-        // the `Executor` is drained of all of its runnables. This ensures that
-        // runnables are dropped and this precondition is satisfied.
-        //
-        // `schedule` is not `Send` nor `Sync`. As LocalExecutor is not
-        // `Send`, the `Waker` is guaranteed// to only be used on the same thread
-        // it was spawned on.
-        //
-        // `Self::schedule` may not be `'static`, but we make sure that the `Waker` does
-        // not outlive `'a`. When the executor is dropped, the `active` field is
-        // drained and all of the `Waker`s are woken.
-        let (runnable, task) = unsafe {
-            Builder::new()
-                .propagate_panic(true)
-                .spawn_unchecked(|()| future, Self::schedule(state))
-        };
-        entry.insert(runnable.waker());
+        // To avoid this, this guard will abort the process if it does
+        // panic. Rust's drop order will ensure that this will run before
+        // executor, and thus before the above AsyncCallOnDrop is dropped.
+        let _panic_guard = AbortOnPanic;
 
+        let (runnable, task) =
+            // Create the task and register it in the set of active tasks.
+            //
+            // SAFETY:
+            //
+            // `future` may not `Send`. Since `LocalExecutor` is `!Sync`,
+            // `try_tick`, `tick` and `run` can only be called from the origin
+            // thread of the `LocalExecutor`. Similarly, `spawn` can only be called
+            // from the origin thread, ensuring that `future` and the executor share
+            // the same origin thread. The `Runnable` cannot be scheduled from other
+            // threads, and because of the above `Runnable` can only be called or
+            // dropped on the origin thread.
+            //
+            // `future` is not `'static`, but we make sure that the `Runnable` does
+            // not outlive `'a`. When the executor is dropped, the `active` field is
+            // drained and all of the `Waker`s are woken. Then, the queue inside of
+            // the `Executor` is drained of all of its runnables. This ensures that
+            // runnables are dropped and this precondition is satisfied.
+            //
+            // `schedule` is not `Send` nor `Sync`. As LocalExecutor is not
+            // `Send`, the `Waker` is guaranteed// to only be used on the same thread
+            // it was spawned on.
+            //
+            // `Self::schedule` may not be `'static`, but we make sure that the `Waker` does
+            // not outlive `'a`. When the executor is dropped, the `active` field is
+            // drained and all of the `Waker`s are woken.
+            unsafe { builder.spawn_unchecked(|()| future, Self::schedule(state)) };
+        entry.insert(runnable.waker());
         runnable.schedule();
+
+        // Critical section over. Forget the guard to avoid panicking on return.
+        mem::forget(_panic_guard);
         task
     }
 

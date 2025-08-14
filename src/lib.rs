@@ -918,6 +918,15 @@ fn debug_state(state: &State, name: &str, f: &mut fmt::Formatter<'_>) -> fmt::Re
         .finish()
 }
 
+struct AbortOnPanic;
+
+impl Drop for AbortOnPanic {
+    fn drop(&mut self) {
+        // Panicking while already panicking will result in an abort
+        panic!("Panicked while in a critical section. Abortign the process");
+    }
+}
+
 /// Runs a closure when dropped.
 struct CallOnDrop<F: FnMut()>(F);
 
