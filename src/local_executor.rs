@@ -33,7 +33,7 @@ pub use async_task::Task;
 /// ```
 pub struct LocalExecutor<'a> {
     /// The executor state.
-    state: Cell<*mut State>,
+    pub(crate) state: Cell<*mut State>,
 
     /// Makes the `'a` lifetime invariant.
     _marker: PhantomData<UnsafeCell<&'a ()>>,
