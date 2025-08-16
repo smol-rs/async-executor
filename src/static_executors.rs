@@ -1,3 +1,4 @@
+use crate::local_executor::State as LocalState;
 use crate::{debug_state, Executor, LocalExecutor, State};
 use async_task::{Builder, Runnable, Task};
 use slab::Slab;
@@ -84,22 +85,32 @@ impl LocalExecutor<'static> {
     /// future::block_on(ex.run(task));
     /// ```
     pub fn leak(self) -> &'static StaticLocalExecutor {
-        let ptr = self.inner.state_ptr();
-        // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be valid
-        // when accessed through state_ptr. This executor will live for the full 'static
-        // lifetime so this isn't an arbitrary lifetime extension.
-        let state: &'static State = unsafe { &*ptr };
+        let ptr = self.state.get();
+
+        let state: &'static LocalState = if ptr.is_null() {
+            Box::leak(Box::new(LocalState::new()))
+        } else {
+            // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be valid
+            // when accessed through state_ptr. This executor will live for the full 'static
+            // lifetime so this isn't an arbitrary lifetime extension.
+            unsafe { &*ptr }
+        };
 
         std::mem::forget(self);
 
-        let mut active = state.active.lock().unwrap();
-        if !active.is_empty() {
-            // Reschedule all of the active tasks.
-            for waker in active.drain() {
-                waker.wake();
+        {
+            // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
+            // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+            // values in `State`, including the active field.
+            let active = unsafe { &mut *state.active.get() };
+            if !active.is_empty() {
+                // Reschedule all of the active tasks.
+                for waker in active.drain() {
+                    waker.wake();
+                }
+                // Overwrite to ensure that the slab is deallocated.
+                *active = Slab::new();
             }
-            // Overwrite to ensure that the slab is deallocated.
-            *active = Slab::new();
         }
 
         // SAFETY: StaticLocalExecutor has the same memory layout as State as it's repr(transparent).
@@ -311,7 +322,7 @@ impl Default for StaticExecutor {
 /// [`thread_local]: https://doc.rust-lang.org/std/macro.thread_local.html
 #[repr(transparent)]
 pub struct StaticLocalExecutor {
-    state: State,
+    state: LocalState,
     marker_: PhantomData<UnsafeCell<()>>,
 }
 
@@ -320,7 +331,7 @@ impl RefUnwindSafe for StaticLocalExecutor {}
 
 impl fmt::Debug for StaticLocalExecutor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        debug_state(&self.state, "StaticLocalExecutor", f)
+        crate::local_executor::debug_state(&self.state, "StaticLocalExecutor", f)
     }
 }
 
@@ -338,7 +349,7 @@ impl StaticLocalExecutor {
     /// ```
     pub const fn new() -> Self {
         Self {
-            state: State::new(),
+            state: LocalState::new(),
             marker_: PhantomData,
         }
     }
@@ -360,9 +371,33 @@ impl StaticLocalExecutor {
     /// });
     /// ```
     pub fn spawn<T: 'static>(&'static self, future: impl Future<Output = T> + 'static) -> Task<T> {
-        let (runnable, task) = Builder::new()
-            .propagate_panic(true)
-            .spawn_local(|()| future, self.schedule());
+        // Create the task and register it in the set of active tasks.
+        //
+        // SAFETY:
+        //
+        // If `future` is not `Send`, this must be a `LocalExecutor` as per this
+        // function's unsafe precondition. Since `LocalExecutor` is `!Sync`,
+        // `try_tick`, `tick` and `run` can only be called from the origin
+        // thread of the `LocalExecutor`. Similarly, `spawn` can only  be called
+        // from the origin thread, ensuring that `future` and the executor share
+        // the same origin thread. The `Runnable` can be scheduled from other
+        // threads, but because of the above `Runnable` can only be called or
+        // dropped on the origin thread.
+        //
+        // `future` is not `'static`, but we make sure that the `Runnable` does
+        // not outlive `'a`. When the executor is dropped, the `active` field is
+        // drained and all of the `Waker`s are woken. Then, the queue inside of
+        // the `Executor` is drained of all of its runnables. This ensures that
+        // runnables are dropped and this precondition is satisfied.
+        //
+        // `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
+        // Therefore we do not need to worry about what is done with the
+        // `Waker`.
+        let (runnable, task) = unsafe {
+            Builder::new()
+                .propagate_panic(true)
+                .spawn_unchecked(|()| future, self.schedule())
+        };
         runnable.schedule();
         task
     }
@@ -377,20 +412,27 @@ impl StaticLocalExecutor {
         &'static self,
         future: impl Future<Output = T> + 'a,
     ) -> Task<T> {
+        // Create the task and register it in the set of active tasks.
+        //
         // SAFETY:
         //
-        // - `future` is not `Send` but `StaticLocalExecutor` is `!Sync`,
-        //   `try_tick`, `tick` and `run` can only be called from the origin
-        //    thread of the `StaticLocalExecutor`. Similarly, `spawn_scoped` can only
-        //    be called from the origin thread, ensuring that `future` and the executor
-        //    share the same origin thread. The `Runnable` can be scheduled from other
-        //    threads, but because of the above `Runnable` can only be called or
-        //    dropped on the origin thread.
-        // - `future` is not `'static`, but the caller guarantees that the
-        //    task, and thus its `Runnable` must not live longer than `'a`.
-        // - `self.schedule()` is `Send`, `Sync` and `'static`, as checked below.
-        //    Therefore we do not need to worry about what is done with the
-        //    `Waker`.
+        // `future` may not `Send` but `StaticLocalExecutor` is `!Sync`,
+        // `try_tick`, `tick` and `run` can only be called from the origin
+        // thread of the `StaticLocalExecutor`. Similarly, `spawn_scoped` can only
+        // be called from the origin thread, ensuring that `future` and the executor
+        // share the same origin thread. The `Runnable` can be scheduled from other
+        // threads, but because of the above `Runnable` can only be called or
+        // dropped on the origin thread.
+        //
+        // `future` is not `'static`, but the caller guarantees that the
+        //  task, and thus its `Runnable` must not live longer than `'a`.
+        //
+        // `self.schedule()` is not `Send` nor `Sync`. As StaticLocalExecutor is not
+        // `Send`, the `Waker` is guaranteed// to only be used on the same thread
+        // it was spawned on.
+        //
+        // `self.schedule()` is `'static`, and thus will outlive all borrowed
+        // variables in the future.
         let (runnable, task) = unsafe {
             Builder::new()
                 .propagate_panic(true)
@@ -464,11 +506,16 @@ impl StaticLocalExecutor {
     }
 
     /// Returns a function that schedules a runnable task when it gets woken up.
-    fn schedule(&'static self) -> impl Fn(Runnable) + Send + Sync + 'static {
-        let state: &'static State = &self.state;
-        // TODO: If possible, push into the current local queue and notify the ticker.
+    fn schedule(&'static self) -> impl Fn(Runnable) + 'static {
+        let state: &'static LocalState = &self.state;
         move |runnable| {
-            state.queue.push(runnable).unwrap();
+            {
+                // SAFETY: All UnsafeCell accesses to queue are tightly scoped, and because
+                // `LocalExecutor` is !Send, there is no way to have concurrent access to the
+                // values in `State`, including the queue field.
+                let queue = unsafe { &mut *state.queue.get() };
+                queue.push_front(runnable);
+            }
             state.notify();
         }
     }
