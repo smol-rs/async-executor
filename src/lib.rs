@@ -923,7 +923,7 @@ struct AbortOnPanic;
 impl Drop for AbortOnPanic {
     fn drop(&mut self) {
         // Panicking while already panicking will result in an abort
-        panic!("Panicked while in a critical section. Abortign the process");
+        panic!("Panicked while in a critical section. Aborting the process");
     }
 }
 
