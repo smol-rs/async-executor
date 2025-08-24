@@ -1,3 +1,7 @@
+# Version 1.13.3
+
+- Avoid places where the code had a possibility to block or panic. (#147)
+
 # Version 1.13.2
 
 - Fix build failure with minimal-versions. (#132)
