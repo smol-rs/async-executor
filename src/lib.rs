@@ -351,7 +351,7 @@ impl<'a> Executor<'a> {
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
             let result = state.queue.push(runnable);
-            debug_assert!(result.is_ok());
+            debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
             state.notify();
         }
     }
