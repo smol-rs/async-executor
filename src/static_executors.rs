@@ -7,7 +7,7 @@ use std::{
     future::Future,
     marker::PhantomData,
     panic::{RefUnwindSafe, UnwindSafe},
-    sync::atomic::Ordering,
+    sync::{atomic::Ordering, PoisonError},
 };
 
 impl Executor<'static> {
@@ -48,7 +48,7 @@ impl Executor<'static> {
 
         std::mem::forget(self);
 
-        let mut active = state.active.lock().unwrap();
+        let mut active = state.active.lock().unwrap_or_else(PoisonError::into_inner);
         if !active.is_empty() {
             // Reschedule all of the active tasks.
             for waker in active.drain() {
@@ -103,7 +103,7 @@ impl LocalExecutor<'static> {
 
         std::mem::forget(self);
 
-        let mut active = state.active.lock().unwrap();
+        let mut active = state.active.lock().unwrap_or_else(PoisonError::into_inner);
         if !active.is_empty() {
             // Reschedule all of the active tasks.
             for waker in active.drain() {
@@ -294,7 +294,8 @@ impl StaticExecutor {
         let state: &'static State = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            state.queue.push(runnable).unwrap();
+            let result = state.queue.push(runnable);
+            debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
             state.notify();
         }
     }
@@ -479,7 +480,8 @@ impl StaticLocalExecutor {
         let state: &'static State = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            state.queue.push(runnable).unwrap();
+            let result = state.queue.push(runnable);
+            debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
             state.notify();
         }
     }
