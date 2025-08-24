@@ -270,11 +270,11 @@ impl<'a> Executor<'a> {
         // the `Executor` is drained of all of its runnables. This ensures that
         // runnables are dropped and this precondition is satisfied.
         //
-        // `Self::schedule` is `Send`, `Sync` and `'static`, as checked below.
-        // Therefore we do not need to worry about what is done with the
-        // `Waker`.
+        // `Self::schedule` is `Send` and `Sync`, as checked below.
+        // Therefore we do not need to worry about which thread the `Waker` is used
+        // and dropped on.
         //
-        // `Self::schedule` may not be k`'static`, but we make sure that the `Waker` does
+        // `Self::schedule` may not be `'static`, but we make sure that the `Waker` does
         // not outlive `'a`. When the executor is dropped, the `active` field is
         // drained and all of the `Waker`s are woken.
         let (runnable, task) = Builder::new()
