@@ -192,7 +192,11 @@ impl StaticExecutor {
         let (runnable, task) = Builder::new()
             .propagate_panic(true)
             .spawn(|()| future, self.schedule());
-        runnable.schedule();
+
+        // `Runnable::schedule` has an extra clone/drop of the Waker, which can
+        // be skipped by directly scheduling instead of calling `Runnable::schedule`.
+        Self::schedule_runnable(&self.state, runnable);
+
         task
     }
 
@@ -219,7 +223,11 @@ impl StaticExecutor {
                 .propagate_panic(true)
                 .spawn_unchecked(|()| future, self.schedule())
         };
-        runnable.schedule();
+
+        // `Runnable::schedule` has an extra clone/drop of the Waker, which can
+        // be skipped by directly scheduling instead of calling `Runnable::schedule`.
+        Self::schedule_runnable(&self.state, runnable);
+
         task
     }
 
@@ -294,10 +302,15 @@ impl StaticExecutor {
         let state: &'static State = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            let result = state.queue.push(runnable);
-            debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
-            state.notify();
+            Self::schedule_runnable(state, runnable);
         }
+    }
+
+    #[inline]
+    fn schedule_runnable(state: &'static State, runnable: Runnable) {
+        let result = state.queue.push(runnable);
+        debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
+        state.notify();
     }
 }
 
@@ -375,7 +388,11 @@ impl StaticLocalExecutor {
         let (runnable, task) = Builder::new()
             .propagate_panic(true)
             .spawn_local(|()| future, self.schedule());
-        runnable.schedule();
+
+        // `Runnable::schedule` has an extra clone/drop of the Waker, which can
+        // be skipped by directly scheduling instead of calling `Runnable::schedule`.
+        Self::schedule_runnable(&self.state, runnable);
+
         task
     }
 
@@ -408,7 +425,11 @@ impl StaticLocalExecutor {
                 .propagate_panic(true)
                 .spawn_unchecked(|()| future, self.schedule())
         };
-        runnable.schedule();
+
+        // `Runnable::schedule` has an extra clone/drop of the Waker, which can
+        // be skipped by directly scheduling instead of calling `Runnable::schedule`.
+        Self::schedule_runnable(&self.state, runnable);
+
         task
     }
 
@@ -480,10 +501,15 @@ impl StaticLocalExecutor {
         let state: &'static State = &self.state;
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            let result = state.queue.push(runnable);
-            debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
-            state.notify();
+            Self::schedule_runnable(state, runnable);
         }
+    }
+
+    #[inline]
+    fn schedule_runnable(state: &'static State, runnable: Runnable) {
+        let result = state.queue.push(runnable);
+        debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
+        state.notify();
     }
 }
 
