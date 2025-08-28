@@ -108,7 +108,7 @@ impl<'a> LocalExecutor<'a> {
         // SAFETY: All UnsafeCell accesses to active are tightly scoped, and because
         // `LocalExecutor` is !Send, there is no way to have concurrent access to the
         // values in `State`, including the active field.
-        let active = unsafe { &mut *self.state().active.get() };
+        let active = unsafe { &mut *state.active.get() };
         Self::spawn_inner(state, future, active)
     }
 
