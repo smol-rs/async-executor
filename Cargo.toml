@@ -18,6 +18,9 @@ exclude = ["/.*"]
 # Adds support for executors optimized for use in static variables.
 static = []
 
+[lib]
+bench = false
+
 [dependencies]
 async-task = "4.4.0"
 concurrent-queue = "2.5.0"
