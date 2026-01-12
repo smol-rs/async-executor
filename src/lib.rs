@@ -420,10 +420,13 @@ impl<'e> Scope<'e> {
         }
     }
 
-    pub fn spawn<F>(&mut self, future: F)
+    pub fn spawn<F, R>(&mut self, future: F)
     where
-        F: Future<Output = ()> + Send + 'e,
+        F: Future<Output = R> + Send + 'e,
     {
+        let future = async {
+            _ = future.await;
+        };
         let task = unsafe { Executor::spawn_inner(self.state, future, &mut self.state.active()) };
         self.tasks.push(task);
     }
