@@ -392,7 +392,7 @@ impl<'a> Executor<'a> {
 
     pub fn scope<'e, R>(
         &'e self,
-        callback: impl Fn(&mut Scope<'e>) -> R,
+        callback: impl FnOnce(&mut Scope<'e>) -> R,
     ) -> impl Future<Output = R> {
         let mut scope = Scope::new(self.state().get_ref());
         let res = callback(&mut scope);
