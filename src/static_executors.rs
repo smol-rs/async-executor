@@ -1,4 +1,5 @@
 use crate::{debug_state, Executor, LocalExecutor, State};
+use alloc::boxed::Box;
 use async_task::{Builder, Runnable, Task};
 use core::{
     cell::UnsafeCell,
