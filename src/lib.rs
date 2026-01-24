@@ -393,6 +393,47 @@ impl<'a> Executor<'a> {
         // and will never be moved until it's dropped.
         Pin::new(unsafe { &*ptr })
     }
+
+    pub fn scope<'e, R>(
+        &'e self,
+        callback: impl FnOnce(&mut Scope<'e>) -> R,
+    ) -> impl Future<Output = R> {
+        let mut scope = Scope::new(self.state().get_ref());
+        let res = callback(&mut scope);
+        let joined = async move {
+            let tasks = scope.tasks;
+            for task in tasks {
+                task.await;
+            }
+            res
+        };
+        joined
+    }
+}
+
+pub struct Scope<'e> {
+    state: Pin<&'e State>,
+    tasks: Vec<Task<()>>,
+}
+
+impl<'e> Scope<'e> {
+    fn new(state: &'e State) -> Self {
+        Scope {
+            state: Pin::new(state),
+            tasks: Vec::new(),
+        }
+    }
+
+    pub fn spawn<F, R>(&mut self, future: F)
+    where
+        F: Future<Output = R> + Send + 'e,
+    {
+        let future = async {
+            _ = future.await;
+        };
+        let task = unsafe { Executor::spawn_inner(self.state, future, &mut self.state.active()) };
+        self.tasks.push(task);
+    }
 }
 
 impl Drop for Executor<'_> {
