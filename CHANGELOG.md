@@ -1,3 +1,8 @@
+# Version 2.0.0
+
+- Upstreaming parts of Hermit `no_std` patchset:
+  - Add minimal scaffolding for `std` feature (#161)
+
 # Version 1.14.0
 
 - Bump MSRV to 1.65. (#146)
