@@ -1,5 +1,4 @@
 use crate::{debug_state, Executor, LocalExecutor, State};
-use alloc::boxed::Box;
 use async_task::{Builder, Runnable, Task};
 use core::{
     cell::UnsafeCell,
@@ -7,7 +6,6 @@ use core::{
     future::Future,
     marker::PhantomData,
     panic::{RefUnwindSafe, UnwindSafe},
-    sync::atomic::Ordering,
 };
 use slab::Slab;
 use std::sync::PoisonError;
@@ -37,16 +35,11 @@ impl Executor<'static> {
     /// future::block_on(ex.run(task));
     /// ```
     pub fn leak(self) -> &'static StaticExecutor {
-        let ptr = self.state.load(Ordering::Relaxed);
-
-        let state: &'static State = if ptr.is_null() {
-            Box::leak(Box::new(State::new()))
-        } else {
-            // SAFETY: So long as an Executor lives, it's state pointer will always be valid
-            // when accessed through state_ptr. This executor will live for the full 'static
-            // lifetime so this isn't an arbitrary lifetime extension.
-            unsafe { &*ptr }
-        };
+        let ptr = self.state_ptr();
+        // SAFETY: So long as an Executor lives, it's state pointer will always be valid
+        // when accessed through state_ptr. This executor will live for the full 'static
+        // lifetime so this isn't an arbitrary lifetime extension.
+        let state: &'static State = unsafe { &*ptr };
 
         core::mem::forget(self);
 
@@ -92,16 +85,11 @@ impl LocalExecutor<'static> {
     /// future::block_on(ex.run(task));
     /// ```
     pub fn leak(self) -> &'static StaticLocalExecutor {
-        let ptr = self.inner.state.load(Ordering::Relaxed);
-
-        let state: &'static State = if ptr.is_null() {
-            Box::leak(Box::new(State::new()))
-        } else {
-            // SAFETY: So long as an Executor lives, it's state pointer will always be valid
-            // when accessed through state_ptr. This executor will live for the full 'static
-            // lifetime so this isn't an arbitrary lifetime extension.
-            unsafe { &*ptr }
-        };
+        let ptr = self.inner.state_ptr();
+        // SAFETY: So long as a LocalExecutor lives, it's state pointer will always be valid
+        // when accessed through state_ptr. This executor will live for the full 'static
+        // lifetime so this isn't an arbitrary lifetime extension.
+        let state: &'static State = unsafe { &*ptr };
 
         core::mem::forget(self);
 
