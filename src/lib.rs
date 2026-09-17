@@ -281,7 +281,10 @@ impl<'a> Executor<'a> {
             .spawn_unchecked(|()| future, self.schedule());
         entry.insert(runnable.waker());
 
-        runnable.schedule();
+        // `Runnable::schedule` has an extra clone/drop of the Waker, which can
+        // be skipped by directly scheduling instead of calling `Runnable::schedule`.
+        Self::schedule_runnable(&state, runnable);
+
         task
     }
 
@@ -354,10 +357,14 @@ impl<'a> Executor<'a> {
 
         // TODO: If possible, push into the current local queue and notify the ticker.
         move |runnable| {
-            let result = state.queue.push(runnable);
-            debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
-            state.notify();
+            Self::schedule_runnable(&state, runnable);
         }
+    }
+
+    fn schedule_runnable(state: &State, runnable: Runnable) {
+        let result = state.queue.push(runnable);
+        debug_assert!(result.is_ok()); // Since we use unbounded queue, push will never fail.
+        state.notify();
     }
 
     /// Returns a pointer to the inner state.
