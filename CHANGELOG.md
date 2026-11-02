@@ -1,3 +1,7 @@
+# Version 1.14.1
+
+- Fix use-after-free when a `Waker` fires during `Executor::drop` (regression in 1.14.0). (#164)
+
 # Version 1.14.0
 
 - Bump MSRV to 1.65. (#146)
